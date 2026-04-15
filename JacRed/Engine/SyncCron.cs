@@ -93,8 +93,9 @@ namespace JacRed.Engine
                         continue;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Console.WriteLine($"JacRed/SyncCron: {ex.Message}");
                     try
                     {
                         if (lastsync > 0)
@@ -103,7 +104,7 @@ namespace JacRed.Engine
                             File.WriteAllText("cache/jacred/lastsync.txt", lastsync.ToString());
                         }
                     }
-                    catch { }
+                    catch { /* best-effort save on error path */ }
                 }
 
                 await Task.Delay(1000 * Random.Shared.Next(60, 300));

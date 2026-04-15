@@ -319,6 +319,12 @@ namespace JacRed.Controllers
 
 
         #region getCookie
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
         async static ValueTask<string> getCookie()
         {
             if (!string.IsNullOrEmpty(jackett.Toloka.cookie))
@@ -335,61 +341,46 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "username", jackett.Toloka.login.u },
+                    { "password", jackett.Toloka.login.p },
+                    { "autologin", "on" },
+                    { "ssl", "on" },
+                    { "redirect", "index.php?" },
+                    { "login", "Вхід" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.Toloka.host}/login.php") { Content = postContent };
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string toloka_sid = null, toloka_data = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("toloka_sid="))
+                            toloka_sid = new Regex("toloka_sid=([^;]+)(;|$)").Match(line).Groups[1].Value;
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "username", jackett.Toloka.login.u },
-                            { "password", jackett.Toloka.login.p },
-                            { "autologin", "on" },
-                            { "ssl", "on" },
-                            { "redirect", "index.php?" },
-                            { "login", "Вхід" }
-                        };
+                        if (line.Contains("toloka_data="))
+                            toloka_data = new Regex("toloka_data=([^;]+)(;|$)").Match(line).Groups[1].Value;
+                    }
 
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.Toloka.host}/login.php", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string toloka_sid = null, toloka_data = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        if (line.Contains("toloka_sid="))
-                                            toloka_sid = new Regex("toloka_sid=([^;]+)(;|$)").Match(line).Groups[1].Value;
-
-                                        if (line.Contains("toloka_data="))
-                                            toloka_data = new Regex("toloka_data=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(toloka_sid) && !string.IsNullOrWhiteSpace(toloka_data))
-                                    {
-                                        string cookie = $"toloka_sid={toloka_sid}; toloka_ssl=1; toloka_data={toloka_data};";
-                                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
-                                        return cookie;
-                                    }
-                                }
-                            }
-                        }
+                    if (!string.IsNullOrWhiteSpace(toloka_sid) && !string.IsNullOrWhiteSpace(toloka_data))
+                    {
+                        string cookie = $"toloka_sid={toloka_sid}; toloka_ssl=1; toloka_data={toloka_data};";
+                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
+                        return cookie;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/toloka getCookie: {ex.Message}"); }
 
             return null;
         }

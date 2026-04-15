@@ -151,13 +151,19 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/lostfilm getTorrent: {ex.Message}"); }
 
             return null;
         }
         #endregion
 
         #region getCookie
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
         async static ValueTask<string> getCookie()
         {
             if (!string.IsNullOrEmpty(jackett.Lostfilm.cookie))
@@ -174,58 +180,43 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "act", "users" },
+                    { "type", "login" },
+                    { "mail", jackett.Lostfilm.login.u },
+                    { "pass", jackett.Lostfilm.login.p },
+                    { "need_captcha", "" },
+                    { "captcha", "" },
+                    { "rem", "1" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.Lostfilm.host}/ajaxik.users.php") { Content = postContent };
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string cookie = string.Empty;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        cookie += " " + line;
+                    }
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "act", "users" },
-                            { "type", "login" },
-                            { "mail", jackett.Lostfilm.login.u },
-                            { "pass", jackett.Lostfilm.login.p },
-                            { "need_captcha", "" },
-                            { "captcha", "" },
-                            { "rem", "1" }
-                        };
-
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.Lostfilm.host}/ajaxik.users.php", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string cookie = string.Empty;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        cookie += " " + line;
-                                    }
-
-                                    if (cookie.Contains("lf_session=") && cookie.Contains("lnk_uid="))
-                                    {
-                                        cookie = Regex.Replace(cookie.Trim(), ";$", "");
-                                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
-                                        return cookie;
-                                    }
-                                }
-                            }
-                        }
+                    if (cookie.Contains("lf_session=") && cookie.Contains("lnk_uid="))
+                    {
+                        cookie = Regex.Replace(cookie.Trim(), ";$", "");
+                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
+                        return cookie;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/lostfilm getCookie: {ex.Message}"); }
 
             return null;
         }

@@ -96,10 +96,20 @@ namespace TorrServer.Controllers
         [Route("ts/{*suffix}")]
         async public Task Index()
         {
-            if (HttpContext.Request.Path.Value.StartsWith("/shutdown"))
+            string pathSuffix = Regex.Replace(HttpContext.Request.Path.Value, "^/ts", "");
+
+            // Block dangerous management endpoints unless from a local/loopback address
+            if (pathSuffix.StartsWith("/shutdown") ||
+                pathSuffix.StartsWith("/exit") ||
+                pathSuffix.StartsWith("/restart") ||
+                pathSuffix.StartsWith("/log") ||
+                pathSuffix.StartsWith("/debug/pprof"))
             {
-                HttpContext.Response.StatusCode = 404;
-                return;
+                if (!Shared.Engine.Utilities.IPNetwork.IsLocalIp(requestInfo.IP))
+                {
+                    HttpContext.Response.StatusCode = 404;
+                    return;
+                }
             }
 
             if (AppInit.conf.accsdb.enable)
@@ -194,7 +204,7 @@ namespace TorrServer.Controllers
                         await rs.Content.CopyToAsync(HttpContext.Response.Body, HttpContext.RequestAborted).ConfigureAwait(false);
                         return;
                     }
-                    else if (!ModInit.conf.rdb || requestInfo.IP == "127.0.0.1" || requestInfo.IP.StartsWith("192.168."))
+                    else if (!ModInit.conf.rdb || Shared.Engine.Utilities.IPNetwork.IsLocalIp(requestInfo.IP))
                     {
                         await httpClient.PostAsync("/settings", new StringContent(requestJson, Encoding.UTF8, "application/json")).ConfigureAwait(false);
                     }
@@ -320,7 +330,18 @@ namespace TorrServer.Controllers
 
             var requestMessage = new HttpRequestMessage();
             var requestMethod = request.Method;
-            if (HttpMethods.IsPost(requestMethod))
+
+            // Attach body for any method that may carry one (not GET/HEAD/OPTIONS/CONNECT/TRACE)
+            bool methodAllowsBody = !HttpMethods.IsGet(requestMethod)
+                                    && !HttpMethods.IsHead(requestMethod)
+                                    && !HttpMethods.IsOptions(requestMethod)
+                                    && !string.Equals(requestMethod, "CONNECT", StringComparison.OrdinalIgnoreCase)
+                                    && !string.Equals(requestMethod, "TRACE", StringComparison.OrdinalIgnoreCase);
+
+            bool hasBody = request.ContentLength > 0
+                           || request.Headers.ContainsKey("Transfer-Encoding");
+
+            if (methodAllowsBody && hasBody)
             {
                 var streamContent = new StreamContent(request.Body);
                 requestMessage.Content = streamContent;

@@ -9,6 +9,42 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
+// shared helpers used by both Accsdb middleware and AdminController
+namespace Lampac.Engine
+{
+    internal static class AdminBruteGuard
+    {
+        internal const string CacheKeyPrefix = "Accsdb:auth:attempts:IP:";
+
+        // Returns current attempt count after incrementing; expiry resets each calendar day.
+        internal static int Increment(IMemoryCache cache, string ip)
+        {
+            string key = CacheKeyPrefix + ip;
+            var box = cache.GetOrCreate(key, e =>
+            {
+                e.AbsoluteExpiration = DateTime.Today.AddDays(1);
+                return new int[1];
+            });
+            return System.Threading.Interlocked.Increment(ref box[0]);
+        }
+
+        internal static int Get(IMemoryCache cache, string ip)
+        {
+            string key = CacheKeyPrefix + ip;
+            return cache.TryGetValue(key, out int[] box) ? System.Threading.Volatile.Read(ref box[0]) : 0;
+        }
+
+        // Exponential backoff: 1s * 2^(n-5), capped at 30s, only after 5 failures.
+        internal static Task BackoffAsync(int attempts)
+        {
+            if (attempts <= 5) return Task.CompletedTask;
+            int exp = Math.Min(attempts - 5, 5); // 2^0..2^5 = 1..32, capped below
+            int ms = (int)Math.Min(Math.Pow(2, exp - 1) * 1000, 30_000);
+            return Task.Delay(ms);
+        }
+    }
+}
+
 namespace Lampac.Engine.Middlewares
 {
     public class Accsdb
@@ -58,20 +94,20 @@ namespace Lampac.Engine.Middlewares
             {
                 if (httpContext.Request.Cookies.TryGetValue("passwd", out string passwd))
                 {
-                    string ipKey = $"Accsdb:auth:IP:{requestInfo.IP}";
-                    if (!memoryCache.TryGetValue(ipKey, out ConcurrentDictionary<string, byte> passwds))
-                    {
-                        passwds = new ConcurrentDictionary<string, byte>();
-                        memoryCache.Set(ipKey, passwds, DateTime.Today.AddDays(1));
-                    }
+                    int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
-                    passwds.TryAdd(passwd, 0);
-
-                    if (passwds.Count > 10)
+                    if (attempts > 10)
                         return httpContext.Response.WriteAsync("Too many attempts, try again tomorrow.", httpContext.RequestAborted);
 
                     if (passwd == AppInit.rootPasswd)
                         return _next(httpContext);
+
+                    // Wrong password — apply exponential backoff then fall through to redirect
+                    return AdminBruteGuard.BackoffAsync(attempts).ContinueWith(_ =>
+                    {
+                        httpContext.Response.Redirect("/admin/auth");
+                        return Task.CompletedTask;
+                    }, httpContext.RequestAborted).Unwrap();
                 }
 
                 if (httpContext.Request.Path.Value.StartsWith("/admin/auth", StringComparison.OrdinalIgnoreCase))
@@ -131,11 +167,11 @@ namespace Lampac.Engine.Middlewares
                     || user.ban 
                     || DateTime.UtcNow > user.expires)
                 {
-                    if (httpContext.Request.Path.Value.StartsWith("/proxy/", StringComparison.OrdinalIgnoreCase) || 
+                    if (httpContext.Request.Path.Value.StartsWith("/proxy/", StringComparison.OrdinalIgnoreCase) ||
                         httpContext.Request.Path.Value.StartsWith("/proxyimg", StringComparison.OrdinalIgnoreCase))
                     {
                         string hash = rexProxyPath.Replace(httpContext.Request.Path.Value, "");
-                        if (AppInit.conf.serverproxy.encrypt || ProxyLink.Decrypt(hash, requestInfo.IP)?.uri != null)
+                        if (ProxyLink.Decrypt(hash, requestInfo.IP)?.uri != null)
                             return _next(httpContext);
                     }
 
@@ -217,6 +253,21 @@ namespace Lampac.Engine.Middlewares
 
             if (rexLockBypass.IsMatch(uri))
             {
+                // Hot paths skip the slow maxlock_day check but still enforce a generous
+                // per-IP hourly ceiling to prevent unlimited abuse.
+                const int hotPathHourlyCap = 10000;
+                string hotKey = $"Accsdb:hotpath_hour:{userip}:{DateTime.Now.Hour}";
+                var hotCounter = memoryCache.GetOrCreate(hotKey, entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1);
+                    return new int[1];
+                });
+                int hotCount = System.Threading.Interlocked.Increment(ref hotCounter[0]);
+                if (hotCount > hotPathHourlyCap)
+                {
+                    islock = true;
+                    return islock;
+                }
                 islock = false;
                 return islock;
             }

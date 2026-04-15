@@ -161,7 +161,6 @@ namespace JacRed.Controllers
                     AllowAutoRedirect = false
                 })
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
                     using (var client = new System.Net.Http.HttpClient(clientHandler))
                     {
                         client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);

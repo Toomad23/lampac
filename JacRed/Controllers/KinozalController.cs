@@ -34,7 +34,14 @@ namespace JacRed.Controllers
             }
             #endregion
 
-            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={id}&action=2", $"id={id}&action=2", "__cfduid=d476ac2d9b5e18f2b67707b47ebd9b8cd1560164391; uid=20520283; pass=ouV5FJdFCd;", proxy: proxyManager.Get(), timeoutSeconds: 10);
+            // Use the operator-configured cookie only. Previously this fell back to
+            // hardcoded leaked credentials for uid=20520283, which identified every
+            // request with someone else's account and was certain to be banned.
+            string kinozalCookie = jackett.Kinozal.cookie ?? Cookie;
+            if (string.IsNullOrEmpty(kinozalCookie))
+                return Content("error");
+
+            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={id}&action=2", $"id={id}&action=2", kinozalCookie, proxy: proxyManager.Get(), timeoutSeconds: 10);
             if (srv_details != null)
             {
                 string torrentHash = new Regex("<ul><li>Инфо хеш: +([^<]+)</li>").Match(srv_details).Groups[1].Value;
@@ -216,7 +223,6 @@ namespace JacRed.Controllers
                     AllowAutoRedirect = false
                 })
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
                     using (var client = new System.Net.Http.HttpClient(clientHandler))
                     {
                         client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);

@@ -285,37 +285,20 @@ namespace Shared.PlaywrightCore
 
                         bool isOk = false;
 
+                        // Primary liveness probe: does Playwright still think the browser is connected?
+                        // This avoids a 5-second reconnect cycle when the HTTP ping endpoint happens to
+                        // be unreachable (e.g. Kestrel bound only on a unix socket, different listen
+                        // IP/port than configured, reverse proxy not forwarding /api/chromium/ping).
                         try
                         {
                             stats_ping = (DateTime.Now, 5, null);
-                            IPage p = keepopen_context != null ? await keepopen_context.NewPageAsync() : await browser.NewPageAsync();
-                            if (p != null)
-                            {
-                                try
-                                {
-                                    var options = new PageGotoOptions
-                                    {
-                                        Timeout = 5000, // 5 секунд
-                                        WaitUntil = WaitUntilState.DOMContentLoaded
-                                    };
-
-                                    var r = await p.GotoAsync($"http://{AppInit.conf.listen.localhost}:{AppInit.conf.listen.port}/api/chromium/ping", options);
-                                    if (r != null)
-                                    {
-                                        stats_ping = (DateTime.Now, r.Status, null);
-                                        if (r.Status == 200)
-                                            isOk = true;
-                                    }
-                                }
-                                finally
-                                {
-                                    await p.CloseAsync();
-                                }
-                            }
+                            var probe = browser;
+                            if (probe != null && probe.IsConnected)
+                                isOk = true;
                         }
                         catch
                         {
-                            stats_ping = (DateTime.Now, 500, null);
+                            stats_ping = (DateTime.Now, 499, null);
                         }
 
                         if (!isOk)
@@ -499,16 +482,15 @@ namespace Shared.PlaywrightCore
         }
 
 
-        static bool workClearCookie = false;
+        static int workClearCookie = 0;
 
         async Task ClearCookie(IBrowserContext context)
         {
-            if (workClearCookie)
+            if (Interlocked.Exchange(ref workClearCookie, 1) == 1)
                 return;
 
             try
             {
-                workClearCookie = true;
                 var cookies = await context.CookiesAsync();
 
                 foreach (var cookie in cookies.Where(c => c.Name == "cf_clearance"))
@@ -522,8 +504,10 @@ namespace Shared.PlaywrightCore
                 }
             }
             catch { }
-
-            workClearCookie = false;
+            finally
+            {
+                Volatile.Write(ref workClearCookie, 0);
+            }
         }
 
 

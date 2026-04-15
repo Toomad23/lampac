@@ -639,34 +639,101 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable)
                 return Json(new { });
 
-            string contentType = "application/octet-stream";
+            if (!TryResolveInsideDlna(path, out string fullPath))
+                return NotFound();
 
-            if (path.EndsWith(".jpg"))
-                contentType = "image/jpeg";
+            if (!IO.File.Exists(fullPath))
+                return NotFound();
 
-            return File(IO.File.OpenRead($"{dlna_path}/{path}"), contentType, true);
+            return PhysicalFile(fullPath, GetContentTypeByExtension(fullPath), enableRangeProcessing: true);
+        }
+
+        static bool TryResolveInsideDlna(string path, out string fullPath)
+        {
+            fullPath = null;
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            try
+            {
+                string root = Path.GetFullPath(dlna_path);
+                string candidate = Path.GetFullPath(Path.Combine(root, path));
+                string rootWithSep = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+
+                if (!candidate.StartsWith(rootWithSep, StringComparison.Ordinal) && candidate != root)
+                    return false;
+
+                fullPath = candidate;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static readonly Dictionary<string, string> mimeMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            [".mkv"]  = "video/x-matroska",
+            [".mp4"]  = "video/mp4",
+            [".m4v"]  = "video/x-m4v",
+            [".mov"]  = "video/quicktime",
+            [".webm"] = "video/webm",
+            [".avi"]  = "video/x-msvideo",
+            [".ts"]   = "video/mp2t",
+            [".m2ts"] = "video/mp2t",
+            [".mts"]  = "video/mp2t",
+            [".m4s"]  = "video/iso.segment",
+            [".mpeg"] = "video/mpeg",
+            [".mpg"]  = "video/mpeg",
+            [".mp3"]  = "audio/mpeg",
+            [".m4a"]  = "audio/mp4",
+            [".aac"]  = "audio/aac",
+            [".flac"] = "audio/flac",
+            [".ogg"]  = "audio/ogg",
+            [".opus"] = "audio/ogg",
+            [".wav"]  = "audio/wav",
+            [".srt"]  = "application/x-subrip",
+            [".vtt"]  = "text/vtt",
+            [".ass"]  = "text/x-ssa",
+            [".ssa"]  = "text/x-ssa",
+            [".jpg"]  = "image/jpeg",
+            [".jpeg"] = "image/jpeg",
+            [".png"]  = "image/png",
+            [".webp"] = "image/webp",
+        };
+
+        static string GetContentTypeByExtension(string path)
+        {
+            string ext = Path.GetExtension(path);
+            return mimeMap.TryGetValue(ext, out string mime) ? mime : "application/octet-stream";
         }
         #endregion
 
         #region Delete
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/delete")]
         public ActionResult Delete(string path)
         {
             if (!AppInit.conf.dlna.enable)
                 return Content(string.Empty);
 
-            try
-            {
-                IO.File.Delete($"{dlna_path}/{path}");
-            }
-            catch { }
+            if (!TryResolveInsideDlna(path, out string fullPath))
+                return NotFound();
 
             try
             {
-                Directory.Delete($"{dlna_path}/{path}", true);
+                if (IO.File.Exists(fullPath))
+                    IO.File.Delete(fullPath);
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"DLNA delete file failed: {ex.Message}"); }
+
+            try
+            {
+                if (Directory.Exists(fullPath))
+                    Directory.Delete(fullPath, true);
+            }
+            catch (Exception ex) { Console.WriteLine($"DLNA delete dir failed: {ex.Message}"); }
 
             return Content(string.Empty);
         }

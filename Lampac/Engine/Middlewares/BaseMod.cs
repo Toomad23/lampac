@@ -144,7 +144,7 @@ namespace Lampac.Engine.Middlewares
                     continue;
                 }
 
-                if (name is "search" or "query" or "title" or "original_title" or "t")
+                if (name is "search" or "query" or "title" or "original_title" or "t" or "path")
                 {
                     if (
                         char.IsDigit(ch) || // ← символ цифрой Unicode

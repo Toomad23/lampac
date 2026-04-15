@@ -1,0 +1,63 @@
+# Self-building Dockerfile — builds Lampac from this repo instead of downloading publish.zip
+# Used by the GitHub Actions pipeline in .github/workflows/docker-publish.yml
+
+# ---------- build stage ----------
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# Restore first for better layer caching
+COPY Lampac.sln ./
+COPY Lampac/Lampac.csproj Lampac/
+COPY BaseModule/BaseModule.csproj BaseModule/
+COPY Catalog/Catalog.csproj Catalog/
+COPY DLNA/DLNA.csproj DLNA/
+COPY JacRed/JacRed.csproj JacRed/
+COPY Merchant/Merchant.csproj Merchant/
+COPY Online/Online.csproj Online/
+COPY Shared/Shared.csproj Shared/
+COPY SISI/SISI.csproj SISI/
+COPY Tracks/Tracks.csproj Tracks/
+COPY TorrServer/TorrServer.csproj TorrServer/
+RUN dotnet restore Lampac.sln
+
+COPY . .
+RUN dotnet publish Lampac/Lampac.csproj -c Release -o /publish --no-restore \
+ && rm -rf /publish/runtimes/osx* /publish/runtimes/win* \
+           /publish/runtimes/linux-arm /publish/runtimes/linux-arm64 \
+           /publish/runtimes/linux-musl-arm64 /publish/runtimes/linux-musl-x64 \
+ && touch /publish/isdocker
+
+# ---------- runtime stage ----------
+FROM debian:12.5-slim
+EXPOSE 9118
+WORKDIR /home
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl unzip sed chromium xvfb libnspr4 fontconfig \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/9.0.12/aspnetcore-runtime-9.0.12-linux-x64.tar.gz \
+ && mkdir -p /usr/share/dotnet \
+ && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet \
+ && rm dotnet.tar.gz
+
+COPY --from=build /publish/ /home/
+
+RUN mkdir -p torrserver \
+ && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \
+ && chmod +x torrserver/TorrServer-linux
+
+RUN mkdir -p .playwright/node/linux-x64 \
+ && curl -fSL -o .playwright/node/linux-x64/node https://github.com/immisterio/playwright/releases/download/chrome/node-linux-x64 \
+ && chmod +x .playwright/node/linux-x64/node \
+ && touch .playwright/node/linux-x64/node.ok
+
+RUN curl -fSL -o ffmpeg.zip https://github.com/immisterio/ffmpeg/releases/download/ffmpeg2/ffmpeg-master-latest-linux64-gpl.zip \
+ && unzip -o ffmpeg.zip && rm -f ffmpeg.zip \
+ && mv ffprobe data/ffprobe && chmod +x data/ffprobe \
+ && mv ffmpeg data/ffmpeg && chmod +x data/ffmpeg
+
+RUN echo '{"chromium":{"executablePath":"/usr/bin/chromium"}}' > init.conf
+
+ENTRYPOINT ["/usr/share/dotnet/dotnet", "Lampac.dll"]

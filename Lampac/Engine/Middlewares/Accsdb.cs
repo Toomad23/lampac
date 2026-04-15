@@ -9,42 +9,6 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-// shared helpers used by both Accsdb middleware and AdminController
-namespace Lampac.Engine
-{
-    internal static class AdminBruteGuard
-    {
-        internal const string CacheKeyPrefix = "Accsdb:auth:attempts:IP:";
-
-        // Returns current attempt count after incrementing; expiry resets each calendar day.
-        internal static int Increment(IMemoryCache cache, string ip)
-        {
-            string key = CacheKeyPrefix + ip;
-            var box = cache.GetOrCreate(key, e =>
-            {
-                e.AbsoluteExpiration = DateTime.Today.AddDays(1);
-                return new int[1];
-            });
-            return System.Threading.Interlocked.Increment(ref box[0]);
-        }
-
-        internal static int Get(IMemoryCache cache, string ip)
-        {
-            string key = CacheKeyPrefix + ip;
-            return cache.TryGetValue(key, out int[] box) ? System.Threading.Volatile.Read(ref box[0]) : 0;
-        }
-
-        // Exponential backoff: 1s * 2^(n-5), capped at 30s, only after 5 failures.
-        internal static Task BackoffAsync(int attempts)
-        {
-            if (attempts <= 5) return Task.CompletedTask;
-            int exp = Math.Min(attempts - 5, 5); // 2^0..2^5 = 1..32, capped below
-            int ms = (int)Math.Min(Math.Pow(2, exp - 1) * 1000, 30_000);
-            return Task.Delay(ms);
-        }
-    }
-}
-
 namespace Lampac.Engine.Middlewares
 {
     public class Accsdb

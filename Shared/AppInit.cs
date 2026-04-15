@@ -229,7 +229,7 @@ namespace Shared
                                     });
                                 }
                             }
-                            catch (Exception ex) { Console.WriteLine($"updateConf merchant user: {ex.Message}"); }
+                            catch (Exception innerEx) { Console.WriteLine($"updateConf merchant user: {innerEx.Message}"); }
                         }
                     }
                 }

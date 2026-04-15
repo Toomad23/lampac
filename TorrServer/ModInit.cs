@@ -8,6 +8,7 @@ using Shared.Models.Module;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +21,7 @@ namespace TorrServer
 
         public static int tsport = 9080;
 
-        public static string tspass = CrypTo.md5(DateTime.Now.ToBinary().ToString());
+        public static string tspass = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
         public static string homedir;
 

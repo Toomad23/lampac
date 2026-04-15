@@ -59,7 +59,10 @@ namespace Lampac.Engine.Middlewares
 
                 IsLocalRequest = true;
 
-                if (httpContext.Request.Headers.TryGetValue("x-client-ip", out StringValues xip) && xip.Count > 0)
+                // x-client-ip override is trusted only from a real loopback socket.
+                // Allowing it from remote callers lets anyone with rootPasswd spoof
+                // their source IP, bypassing per-IP rate limiting and audit logs.
+                if (IsLocalIp && httpContext.Request.Headers.TryGetValue("x-client-ip", out StringValues xip) && xip.Count > 0)
                 {
                     if (!string.IsNullOrEmpty(xip[0]))
                         clientIp = xip[0];

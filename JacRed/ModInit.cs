@@ -88,7 +88,7 @@ namespace Jackett
                             conf.Jackett.Anifilm.showdown = await showdown("anifilm", conf.Jackett.Anifilm);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { Console.WriteLine($"JacRed/ModInit showdown: {ex.Message}"); }
                 }
             });
         }

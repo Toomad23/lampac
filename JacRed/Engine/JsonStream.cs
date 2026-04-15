@@ -28,7 +28,7 @@ namespace JacRed.Engine.CORE
                     }
                 }
             }
-            catch { return default; }
+            catch (Exception ex) { Console.WriteLine($"JacRed/JsonStream Read: {ex.Message}"); return default; }
         }
         #endregion
 
@@ -52,7 +52,7 @@ namespace JacRed.Engine.CORE
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/JsonStream Write: {ex.Message}"); }
         }
         #endregion
     }

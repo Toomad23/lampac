@@ -66,7 +66,7 @@ namespace Shared
                         updateConf();
                         updateYamlConf();
                     }
-                    catch { }
+                    catch (Exception ex) { Console.WriteLine($"bg watcherInit: {ex.Message}"); }
                     finally
                     {
                         fileWatcher.EnableRaisingEvents = true;
@@ -77,7 +77,7 @@ namespace Shared
             {
                 ThreadPool.QueueUserWorkItem(async _ =>
                 {
-                    while (true)
+                    while (!Startup.IsShutdown)
                     {
                         await Task.Delay(TimeSpan.FromSeconds(1));
 
@@ -107,11 +107,11 @@ namespace Shared
                                         Directory.CreateDirectory("database/backup/init");
                                         File.WriteAllText($"database/backup/init/{DateTime.Now.ToString("dd-MM-yyyy.HH")}.conf", init);
                                     }
-                                    catch { }
+                                    catch (Exception ex) { Console.WriteLine($"bg conf backup: {ex.Message}"); }
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex) { Console.WriteLine($"bg conf reload: {ex.Message}"); }
                     }
                 });
             }
@@ -140,6 +140,7 @@ namespace Shared
             if (!initfile.StartsWith("{"))
                 initfile = "{" + initfile + "}";
 
+            var prevConf = conf;
             try
             {
                 conf = JsonConvert.DeserializeObject<AppInit>(initfile, new JsonSerializerSettings
@@ -151,10 +152,22 @@ namespace Shared
                     }
                 });
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"updateConf: parse failed: {ex.Message}");
+                conf = null;
+            }
 
             if (conf == null)
+            {
+                if (prevConf != null)
+                {
+                    Console.WriteLine("updateConf: keeping previous conf due to parse failure");
+                    conf = prevConf;
+                    return;
+                }
                 conf = new AppInit();
+            }
 
             PosterApi.Initialization(conf.omdbapi_key, conf.posterApi, new ProxyLink());
 
@@ -216,7 +229,7 @@ namespace Shared
                                     });
                                 }
                             }
-                            catch { }
+                            catch (Exception innerEx) { Console.WriteLine($"updateConf merchant user: {innerEx.Message}"); }
                         }
                     }
                 }
@@ -227,7 +240,7 @@ namespace Shared
             {
                 File.WriteAllText("current.conf", JsonConvert.SerializeObject(conf, Formatting.Indented));
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"updateConf write current.conf: {ex.Message}"); }
         }
 
         static void updateYamlConf()
@@ -260,7 +273,7 @@ namespace Shared
                             {
                                 File.WriteAllText("current.conf", JsonConvert.SerializeObject(conf, Formatting.Indented));
                             }
-                            catch { }
+                            catch (Exception ex) { Console.WriteLine($"updateYamlConf write current.conf: {ex.Message}"); }
                         }
                     }
                 }
@@ -324,7 +337,7 @@ namespace Shared
                             mod.index = mod.index != 0 ? mod.index : (100 + modules.Count);
                             modules.Add(mod);
                         }
-                        catch { }
+                        catch (Exception ex) { Console.WriteLine($"LoadModules {path}: {ex.Message}"); }
                     }
                 }
             }

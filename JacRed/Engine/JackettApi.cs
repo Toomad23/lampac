@@ -14,7 +14,7 @@ namespace JacRed.Engine
         {
             var hybridCache = IHybridCache.Get(null);
 
-            string mkey = $"JackettApi:{query}:{title}:{year}:{is_serial}";
+            string mkey = $"JackettApi:{query}:{title}:{title_original}:{year}:{is_serial}:{category?.FirstOrDefault().Value}";
             if (hybridCache.TryGetValue(mkey, out List<TorrentDetails> cache, inmemory: false))
                 return cache;
 
@@ -74,7 +74,7 @@ namespace JacRed.Engine
                                             tasks.Add(task);
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex) { Console.WriteLine($"JacRed/JackettApi modpars: {ex.Message}"); }
                             }
                         }
                     }

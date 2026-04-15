@@ -304,7 +304,7 @@ namespace Lampac
                                         });
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex) { Console.WriteLine($"bg migration sisi {file}: {ex.Message}"); }
                             }
                         }
 
@@ -365,7 +365,7 @@ namespace Lampac
                                 string[] ln = ip.Split('/');
                                 cloudflare_ips.Add((IPAddress.Parse(ln[0].Trim()), int.Parse(ln[1].Trim())));
                             }
-                            catch { }
+                            catch (Exception ex) { Console.WriteLine($"bg cloudflare_ips parse: {ex.Message}"); }
                         }
                     }
                 }
@@ -412,7 +412,7 @@ namespace Lampac
                         });
                     }
                 }
-                catch { }
+                catch (Exception ex) { Console.WriteLine($"bg update.sh check: {ex.Message}"); }
             }
             #endregion
 
@@ -531,13 +531,13 @@ namespace Lampac
                                 AppInit.conf.accsdb.users.Add(user);
                             }
                         }
-                        catch { }
+                        catch (Exception ex) { Console.WriteLine($"bg UpdateUsersDb inner: {ex.Message}"); }
                     }
 
                     _usersKeyUpdate = keyUpdate;
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"bg UpdateUsersDb: {ex.Message}"); }
             finally
             {
                 Volatile.Write(ref _updateUsersDb, 0);
@@ -562,7 +562,7 @@ namespace Lampac
                         AppInit.conf.kit.allUsers = users;
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"bg UpdateKitDb: {ex.Message}"); }
             finally
             {
                 Volatile.Write(ref _updateKitDb, 0);

@@ -74,25 +74,32 @@ namespace DLNA
                                 continue;
                             }
 
-                            File.Create(lockfile);
+                            File.WriteAllBytes(lockfile, Array.Empty<byte>());
 
-                            string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
-                            log("\ncoverComand: " + coverComand);
-                            var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
-
-                            log(ffmpegLog.outputData);
-                            log(ffmpegLog.errorData);
-
-                            if (cover.preview)
+                            try
                             {
-                                string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(name)}.mp4");
-                                string previewComand = cover.previewComand.Replace("{file}", file).Replace("{preview}", preview);
-
-                                log("\npreviewComand: " + previewComand);
-                                ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+                                string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
+                                log("\ncoverComand: " + coverComand);
+                                var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
 
                                 log(ffmpegLog.outputData);
                                 log(ffmpegLog.errorData);
+
+                                if (cover.preview)
+                                {
+                                    string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(name)}.mp4");
+                                    string previewComand = cover.previewComand.Replace("{file}", file).Replace("{preview}", preview);
+
+                                    log("\npreviewComand: " + previewComand);
+                                    ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+
+                                    log(ffmpegLog.outputData);
+                                    log(ffmpegLog.errorData);
+                                }
+                            }
+                            finally
+                            {
+                                try { if (File.Exists(lockfile)) File.Delete(lockfile); } catch { }
                             }
                         }
                         #endregion
@@ -100,7 +107,8 @@ namespace DLNA
                         #region path directories
                         foreach (string folder in Directory.GetDirectories(init.path))
                         {
-                            if (folder.Contains("thumbs") || folder.Contains("tmdb") || folder.Contains("temp"))
+                            string _fname = Path.GetFileName(folder);
+                            if (_fname == "thumbs" || _fname == "tmdb" || _fname == "temp")
                                 continue;
 
                             string folder_name = Path.GetFileName(folder);
@@ -130,45 +138,52 @@ namespace DLNA
                                 continue;
                             }
 
-                            File.Create(lockfile);
+                            File.WriteAllBytes(lockfile, Array.Empty<byte>());
 
-                            #region постер с превью на папку
+                            try
                             {
-                                string coverComand = cover.coverComand.Replace("{file}", files[0]).Replace("{thumb}", folder_thumb);
-                                log("\ncoverComand: " + coverComand);
-                                var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
-
-                                log(ffmpegLog.outputData);
-                                log(ffmpegLog.errorData);
-
-                                if (cover.preview)
+                                #region постер с превью на папку
                                 {
-                                    string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(folder_name)}.mp4");
-                                    string previewComand = cover.previewComand.Replace("{file}", files[0]).Replace("{preview}", preview);
+                                    string coverComand = cover.coverComand.Replace("{file}", files[0]).Replace("{thumb}", folder_thumb);
+                                    log("\ncoverComand: " + coverComand);
+                                    var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
 
-                                    log("\npreviewComand: " + previewComand);
-                                    ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+                                    log(ffmpegLog.outputData);
+                                    log(ffmpegLog.errorData);
+
+                                    if (cover.preview)
+                                    {
+                                        string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(folder_name)}.mp4");
+                                        string previewComand = cover.previewComand.Replace("{file}", files[0]).Replace("{preview}", preview);
+
+                                        log("\npreviewComand: " + previewComand);
+                                        ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+
+                                        log(ffmpegLog.outputData);
+                                        log(ffmpegLog.errorData);
+                                    }
+                                }
+                                #endregion
+
+                                #region постеры на файлы внутри папки
+                                foreach (string file in files)
+                                {
+                                    string name = $"{Path.GetFileName(folder)}/{Path.GetFileName(file)}";
+                                    string thumb = Path.Combine(init.path, "thumbs", $"{CrypTo.md5(name)}.jpg");
+
+                                    string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
+                                    log("\ncoverComand: " + coverComand);
+                                    var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
 
                                     log(ffmpegLog.outputData);
                                     log(ffmpegLog.errorData);
                                 }
+                                #endregion
                             }
-                            #endregion
-
-                            #region постеры на файлы внутри папки
-                            foreach (string file in files)
+                            finally
                             {
-                                string name = $"{Path.GetFileName(folder)}/{Path.GetFileName(file)}";
-                                string thumb = Path.Combine(init.path, "thumbs", $"{CrypTo.md5(name)}.jpg");
-
-                                string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
-                                log("\ncoverComand: " + coverComand);
-                                var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
-
-                                log(ffmpegLog.outputData);
-                                log(ffmpegLog.errorData);
+                                try { if (File.Exists(lockfile)) File.Delete(lockfile); } catch { }
                             }
-                            #endregion
                         }
                         #endregion
                     }

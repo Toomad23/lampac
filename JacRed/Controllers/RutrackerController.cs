@@ -68,7 +68,7 @@ namespace JacRed.Controllers
             #endregion
 
             #region Кеш html
-            string html = await Http.Get($"{jackett.Rutracker.host}/forum/tracker.php?nm=" + HttpUtility.UrlEncode(query), proxy: proxyManager.Get(), cookie: cookie, timeoutSeconds: jackett.timeoutSeconds);
+            string html = await Http.Get($"{jackett.Rutracker.host}/forum/tracker.php?nm=" + HttpUtility.UrlEncode(query), proxy: proxyManager.Get(), cookie: cookie, timeoutSeconds: jackett.timeoutSeconds, MaxResponseContentBufferSize: 2_000_000);
 
             if (html != null)
             {
@@ -376,6 +376,12 @@ namespace JacRed.Controllers
 
 
         #region getCookie
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
         async static ValueTask<string> getCookie()
         {
             if (!string.IsNullOrEmpty(jackett.Rutracker.cookie))
@@ -392,55 +398,40 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "login_username", jackett.Rutracker.login.u },
+                    { "login_password", jackett.Rutracker.login.p },
+                    { "login", "Вход" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.Rutracker.host}/forum/login.php") { Content = postContent };
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string session = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("bb_session="))
+                            session = new Regex("bb_session=([^;]+)(;|$)").Match(line).Groups[1].Value;
+                    }
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "login_username", jackett.Rutracker.login.u },
-                            { "login_password", jackett.Rutracker.login.p },
-                            { "login", "Вход" }
-                        };
-
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.Rutracker.host}/forum/login.php", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string session = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        if (line.Contains("bb_session="))
-                                            session = new Regex("bb_session=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(session))
-                                    {
-                                        string cookie = $"bb_ssl=1; bb_session={session};";
-                                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
-                                        return cookie;
-                                    }
-                                }
-                            }
-                        }
+                    if (!string.IsNullOrWhiteSpace(session))
+                    {
+                        string cookie = $"bb_ssl=1; bb_session={session};";
+                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
+                        return cookie;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/rutracker getCookie: {ex.Message}"); }
 
             return null;
         }

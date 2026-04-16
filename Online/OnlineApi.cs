@@ -197,7 +197,11 @@ namespace Online.Controllers
                     string mkey = $"externalids:KP_:{_kp}";
                     if (!hybridCache.TryGetValue(mkey, out string _imdbid, inmemory: false))
                     {
-                        string json = await Http.Get($"https://api.alloha.tv/?token=04941a9a3ca3ac16e2b4327347bbc1&kp=" + _kp, timeoutSeconds: 5);
+                        // Why: prefer operator-supplied Alloha token from init.conf; fall back to the shared-public token
+                        // documented in the original Lampac so existing deployments keep working. Operators who care about
+                        // quota should override AppInit.conf.Alloha.token.
+                        string allohaToken = !string.IsNullOrEmpty(AppInit.conf.Alloha?.token) ? AppInit.conf.Alloha.token : "04941a9a3ca3ac16e2b4327347bbc1";
+                        string json = await Http.Get($"https://api.alloha.tv/?token={allohaToken}&kp=" + _kp, timeoutSeconds: 5);
                         _imdbid = Regex.Match(json ?? "", "\"id_imdb\":\"(tt[^\"]+)\"").Groups[1].Value;
                         hybridCache.Set(mkey, _imdbid, DateTime.Now.AddHours(8), inmemory: false);
                     }
@@ -211,7 +215,11 @@ namespace Online.Controllers
             async Task<string> getAlloha(string imdb)
             {
                 var proxyManager = new ProxyManager("alloha", AppInit.conf.Alloha);
-                string json = await Http.Get("https://api.alloha.tv/?token=04941a9a3ca3ac16e2b4327347bbc1&imdb=" + imdb, timeoutSeconds: 5, proxy: proxyManager.Get());
+                // Why: prefer operator-supplied Alloha token from init.conf; fall back to the shared-public token
+                // documented in the original Lampac so existing deployments keep working. Operators who care about
+                // quota should override AppInit.conf.Alloha.token.
+                string allohaToken = !string.IsNullOrEmpty(AppInit.conf.Alloha?.token) ? AppInit.conf.Alloha.token : "04941a9a3ca3ac16e2b4327347bbc1";
+                string json = await Http.Get($"https://api.alloha.tv/?token={allohaToken}&imdb=" + imdb, timeoutSeconds: 5, proxy: proxyManager.Get());
                 if (json == null)
                     return null;
 
@@ -249,7 +257,11 @@ namespace Online.Controllers
             async Task<string> getTabus(string imdb)
             {
                 var proxyManager = new ProxyManager("collaps", AppInit.conf.Collaps);
-                string json = await Http.Get("https://api.bhcesh.me/franchise/details?token=d39edcf2b6219b6421bffe15dde9f1b3&imdb_id=" + imdb.Remove(0, 2), timeoutSeconds: 5, proxy: proxyManager.Get());
+                // Why: prefer operator-supplied Bhcesh/Collaps token from init.conf; fall back to the shared-public token
+                // documented in the original Lampac so existing deployments keep working. Operators who care about
+                // quota should override AppInit.conf.Collaps.token.
+                string bhceshToken = !string.IsNullOrEmpty(AppInit.conf.Collaps?.token) ? AppInit.conf.Collaps.token : "d39edcf2b6219b6421bffe15dde9f1b3";
+                string json = await Http.Get($"https://api.bhcesh.me/franchise/details?token={bhceshToken}&imdb_id=" + imdb.Remove(0, 2), timeoutSeconds: 5, proxy: proxyManager.Get());
                 if (json == null)
                     return null;
 

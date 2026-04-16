@@ -178,6 +178,14 @@ namespace Online.Controllers
             if (await IsRequestBlocked(rch: false, rch_check: false))
                 return badInitMsg;
 
+            // Why (FH-11): host comes from the client and is embedded as-is into a server-side
+            // GET ("https://{host}/embed/..."), which is an SSRF primitive. The upstream Kurwa
+            // page parsed at line 103 only ever exposes "aniboom.<tld>" hosts, so reuse that
+            // same shape: letters/digits/dash/dot, must start with "aniboom.". This also rejects
+            // credentials/ports/paths that could tunnel via the URL authority.
+            if (string.IsNullOrEmpty(host) || !Regex.IsMatch(host, "^aniboom\\.[A-Za-z0-9.-]+$"))
+                return OnError();
+
             return await InvkSemaphore($"animego:video:{token}:{t}:{e}", async key =>
             {
                 if (!hybridCache.TryGetValue(key, out string hls))

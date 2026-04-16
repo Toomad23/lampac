@@ -7,6 +7,46 @@ namespace Online.Controllers
     {
         public AniMedia() : base(AppInit.conf.AniMedia) { }
 
+        // Why (FH-7): Video(vod) is a server-side fetch of a caller-supplied URL, i.e. an
+        // SSRF primitive unless the host is restricted. Mirror Animebesst.IsAllowedUri:
+        // require http(s) and pin the host to init.host / init.apihost or a subdomain.
+        bool IsAllowedUri(string uri, bool schemeOptional)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return false;
+
+            string candidate = uri;
+            if (schemeOptional && !candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                  !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                candidate = "https://" + candidate;
+
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = parsed.Host;
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            foreach (string configured in new[] { init?.host, init?.apihost })
+            {
+                if (string.IsNullOrEmpty(configured))
+                    continue;
+
+                if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                    continue;
+
+                string allowedHost = configuredUri.Host;
+                if (host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
         [HttpGet]
         [Route("lite/animedia")]
         async public Task<ActionResult> Index(string title, string news, bool rjson = false, bool similar = false)
@@ -142,6 +182,11 @@ namespace Online.Controllers
         {
             if (await IsRequestBlocked(rch: false, rch_check: false))
                 return badInitMsg;
+
+            // Why (FH-7): reject vod values whose host is not init.host/init.apihost so
+            // the server-side GET cannot be pointed at internal/metadata targets.
+            if (!IsAllowedUri(vod, schemeOptional: false))
+                return OnError();
 
             return await InvkSemaphore($"animedia:{vod}", async key =>
             {

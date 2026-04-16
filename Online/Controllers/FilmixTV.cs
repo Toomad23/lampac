@@ -135,7 +135,14 @@ namespace Online.Controllers
                     init.hash_apitv = hash;
                 }
 
-                var auth = await InvokeCacheResult<string>($"filmixtv:accessToken:{init.user_apitv}:{init.passwd_apitv}:{init.hash_apitv}", 60*5, async e =>
+                // Why (FL-11): the raw passwd_apitv / hash_apitv credentials ended up in the
+                // cache key, so their plaintext was readable from any cache dump or log that
+                // echoed cache keys. Replace each secret segment with an md5 fingerprint — the
+                // key still varies per-credential for isolation but no longer discloses the
+                // original value.
+                string passwdKey = !string.IsNullOrEmpty(init.passwd_apitv) ? CrypTo.md5(init.passwd_apitv) : string.Empty;
+                string hashKey = !string.IsNullOrEmpty(init.hash_apitv) ? CrypTo.md5(init.hash_apitv) : string.Empty;
+                var auth = await InvokeCacheResult<string>($"filmixtv:accessToken:{init.user_apitv}:{passwdKey}:{hashKey}", 60*5, async e =>
                 {
                     JObject root_auth = null;
 

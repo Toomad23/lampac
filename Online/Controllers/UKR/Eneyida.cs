@@ -15,7 +15,10 @@ namespace Online.Controllers
 
             if (string.IsNullOrEmpty(href) && !string.IsNullOrEmpty(source) && !string.IsNullOrEmpty(id))
             {
-                if (source.ToLower() == "eneyida")
+                // Why (FM-11): id is concatenated into a URL path; without a character class
+                // it can carry "?" or "/" segments (SSRF / path traversal). Restrict to the
+                // Kinoukr/Plvideo/AnimeLib (PR #12 M-13) safe set.
+                if (source.ToLower() == "eneyida" && Regex.IsMatch(id, "^[A-Za-z0-9_\\-]+$"))
                     href = $"{init.host}/{id}";
             }
 

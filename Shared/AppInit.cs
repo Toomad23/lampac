@@ -528,6 +528,8 @@ namespace Shared
 
         public FfprobeSettings ffprobe = new FfprobeSettings() { enable = true };
 
+        public CorsConf cors { get; set; } = new CorsConf();
+
         public TranscodingConf transcoding { get; set; } = new TranscodingConf()
         {
             tempRoot = Path.Combine("cache", "transcoding"),

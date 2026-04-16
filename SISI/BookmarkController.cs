@@ -151,7 +151,11 @@ namespace SISI
                         {
                             newimage = pimg;
                         }
-                        else
+                        // data.bookmark.image is client-supplied; without an SSRF
+                        // guard Http.DownloadFile would happily fetch internal URLs
+                        // (169.254.169.254, 127.0.0.1:*, intranet admin) and drop
+                        // the response body into public wwwroot for later pickup.
+                        else if (await SsrfGuard.IsAllowedPublicUriAsync(data.bookmark.image))
                         {
                             Directory.CreateDirectory($"wwwroot/bookmarks/img/{uid.Substring(0, 2)}");
 
@@ -173,7 +177,7 @@ namespace SISI
                             {
                                 data.preview = path;
                             }
-                            else
+                            else if (await SsrfGuard.IsAllowedPublicUriAsync(data.preview))
                             {
                                 Directory.CreateDirectory($"wwwroot/bookmarks/preview/{uid.Substring(0, 2)}");
 

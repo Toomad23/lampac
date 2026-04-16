@@ -372,6 +372,26 @@ namespace Lampac.Controllers
                     return Task.CompletedTask;
                 }
             }
+            else
+            {
+                // Fresh install: Accsdb middleware lets /admin/manifest/install
+                // through without auth so the operator can bootstrap the box.
+                // Before this gate, an external attacker who noticed an
+                // unconfigured instance could drive the POST and read the
+                // root passwd back from the success HTML. Require proof of
+                // locality — the operator must SSH in and drive the install
+                // from loopback (`curl 127.0.0.1/admin/manifest/install …`).
+                string remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+                if (!Shared.Engine.Utilities.IPNetwork.IsLocalIp(remoteIp))
+                {
+                    HttpContext.Response.StatusCode = 403;
+                    HttpContext.Response.ContentType = "text/plain; charset=utf-8";
+                    return HttpContext.Response.WriteAsync(
+                        "First-time install must be driven from a loopback peer.\n" +
+                        "SSH into the host and run the request against 127.0.0.1 (or `docker exec … curl localhost/admin/manifest/install`).",
+                        HttpContext.RequestAborted);
+                }
+            }
 
             HttpContext.Response.ContentType = "text/html; charset=utf-8";
 
@@ -534,7 +554,7 @@ namespace Lampac.Controllers
 <div class=""block"">
     <b>Админ панель</b><br /><br />
     Aдрес: {host}/admin<br />
-    Пароль: {IO.File.ReadAllText("passwd")}
+    Пароль: смотри файл <code>passwd</code> на хосте (<code>cat passwd</code> или <code>docker exec -it lampac cat passwd</code>)
 </div>
 
 <hr />

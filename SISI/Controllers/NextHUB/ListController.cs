@@ -592,7 +592,25 @@ namespace SISI.Controllers.NextHUB
                         return string.Empty;
                     }
 
-                    string eval = $"return (cat != null && sort != null) ? $\"{goroute("catsort")}\" : (model != null && sort != null) ? $\"{goroute("modelsort")}\" : model != null ? $\"{goroute("model")}\" : cat != null ? $\"{goroute("cat")}\" : sort != null ? $\"{goroute("sort")}\" : \"{url}\";";
+                    // Why (FC-3): the previous build embedded the already-
+                    // assembled `url` variable straight into C# source via
+                    // string interpolation: `... : \"{url}\";`. `url` at
+                    // this point can contain user-controlled text (from
+                    // `sort`, `cat`, `model`, `init.menu.customs.arg`
+                    // query-string values up-thread at :558–578). A single
+                    // `"` in the query turns the source text into arbitrary
+                    // C# — Roslyn then compiles and executes it. Globals
+                    // expose `Shared.Engine.Bash.Run` via evalOptionsFull, so
+                    // this was an unauthenticated RCE on any plugin that
+                    // defined `menu.route`.
+                    //
+                    // Fix: reference `url` through the NxtMenuRoute globals
+                    // record (already has a `url` field) instead of pasting
+                    // the raw string into source. The goroute("X") templates
+                    // come from the plugin YAML (trusted config), so keeping
+                    // those inside $"..." is fine — only the attacker-
+                    // controlled fallback changes.
+                    string eval = $"return (cat != null && sort != null) ? $\"{goroute("catsort")}\" : (model != null && sort != null) ? $\"{goroute("modelsort")}\" : model != null ? $\"{goroute("model")}\" : cat != null ? $\"{goroute("cat")}\" : sort != null ? $\"{goroute("sort")}\" : url;";
                     url = CSharpEval.BaseExecute<string>(eval, new NxtMenuRoute(init.corsHost(), plugin, url, search, cat, sort, model, HttpContext.Request.Query, pg));
                 }
             }

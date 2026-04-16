@@ -299,8 +299,13 @@ namespace Shared
             // from external clients lets anyone inject an arbitrary Host into the
             // {host}/proxy/... URLs we embed in responses, which then get cached
             // and served to other users. Gate on a loopback peer.
+            //
+            // Why (FC-1): must use IsStrictLoopback — IsLocalIp also returns
+            // true for RFC1918/ULA (10/8, 172.16/12, 192.168/16, fc00::/7), so
+            // any LAN peer could spoof xhost and poison the cache. Only the
+            // host itself (127/8 or ::1) may dictate the public URL.
             string remoteIp = httpContext.Connection.RemoteIpAddress?.ToString();
-            bool trustedPeer = Shared.Engine.Utilities.IPNetwork.IsLocalIp(remoteIp);
+            bool trustedPeer = Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp);
 
             if (trustedPeer && httpContext.Request.Headers.TryGetValue("xscheme", out var xscheme) && !string.IsNullOrEmpty(xscheme))
                 scheme = xscheme;

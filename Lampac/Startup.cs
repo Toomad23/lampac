@@ -484,11 +484,30 @@ namespace Lampac
             });
 
             #region UseForwardedHeaders
+            // Why (FC-2): previously ForwardLimit = null combined with the
+            // default KnownProxies/KnownNetworks (127.0.0.1/8 + ::1) let ANY
+            // loopback peer (reverse proxy, local Tor hidden service, unix
+            // socket peer, a local process) spoof X-Forwarded-For and have
+            // HttpContext.Connection.RemoteIpAddress rewritten to whatever
+            // they sent. That breaks the FC-1 loopback gates (without the
+            // FC-2 raw-IP read) and per-IP rate limiting / audit logs.
+            //
+            // Defence in depth:
+            //  * ForwardLimit = 1 — only trust the first hop's header chain.
+            //  * KnownNetworks.Clear() + KnownProxies.Clear() — drop the
+            //    "loopback is trusted" default. A trusted forwarder must be
+            //    declared explicitly via init.KnownProxies.
+            //  * real_ip_cf / listen.frontend=cloudflare users already handle
+            //    the CF-Connecting-IP rewrite themselves in RequestInfo.cs,
+            //    so we do not need to (and must not) trust XFF for them.
             var forwarded = new ForwardedHeadersOptions
             {
-                ForwardLimit = null,
+                ForwardLimit = 1,
                 ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
             };
+
+            forwarded.KnownNetworks.Clear();
+            forwarded.KnownProxies.Clear();
 
             if (init.KnownProxies != null && init.KnownProxies.Count > 0)
             {

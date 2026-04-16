@@ -384,8 +384,24 @@ namespace Lampac.Controllers
                 // root passwd back from the success HTML. Require proof of
                 // locality — the operator must SSH in and drive the install
                 // from loopback (`curl 127.0.0.1/admin/manifest/install …`).
-                string remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-                if (!Shared.Engine.Utilities.IPNetwork.IsLocalIp(remoteIp))
+                //
+                // Why (FC-1): use IsStrictLoopback — IsLocalIp also accepts
+                // RFC1918 peers (10/8, 192.168/16, 172.16/12, fc00::/7), so
+                // any LAN attacker would satisfy it. Fresh install must only
+                // be driven from the host itself (127.0.0.0/8 or ::1).
+                //
+                // Why (FC-2): UseForwardedHeaders runs before MVC with an
+                // unbounded ForwardLimit and the default KnownProxies/
+                // KnownNetworks (loopback is trusted). So HttpContext.
+                // Connection.RemoteIpAddress may already have been overwritten
+                // by X-Forwarded-For sent from a loopback reverse proxy / Tor
+                // hidden service / local unix socket / anything peering over
+                // lo. Read the true socket peer via IHttpConnectionFeature,
+                // which is populated by Kestrel before any middleware runs.
+                var connFeat = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();
+                string remoteIp = connFeat?.RemoteIpAddress?.ToString()
+                                  ?? HttpContext.Connection.RemoteIpAddress?.ToString();
+                if (!Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp))
                 {
                     HttpContext.Response.StatusCode = 403;
                     HttpContext.Response.ContentType = "text/plain; charset=utf-8";

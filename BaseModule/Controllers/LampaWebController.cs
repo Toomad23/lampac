@@ -313,50 +313,90 @@ namespace Lampac.Controllers
             if (IO.File.Exists(wgt))
                 return File(IO.File.OpenRead(wgt), "application/octet-stream");
 
-            string index = IO.File.ReadAllText($"{folder}/samsung/index.html");
-            IO.File.WriteAllText($"{folder}/samsung/publish/index.html", index.Replace("{localhost}", overwritehost ?? host));
+            // Why (M-26): previously every concurrent request wrote index.html/loader.js/
+            // app.js/author-signature.xml/signature1.xml into the shared
+            // {folder}/samsung/publish/ directory, substituting its own overwritehost.
+            // Two overlapping requests would race and ship one user's overwritehost
+            // inside another user's .wgt (plus corrupt hash recomputation). Isolate
+            // each build into a CSPRNG-named sibling dir under data/widgets/samsung/
+            // and wipe it in finally. Mirrors the ProxyImg per-request dir pattern.
+            string publishDir = $"{folder}/samsung/publish-{Convert.ToHexString(RandomNumberGenerator.GetBytes(16))}";
 
-            string loader = IO.File.ReadAllText($"{folder}/samsung/loader.js");
-            IO.File.WriteAllText($"{folder}/samsung/publish/loader.js", loader.Replace("{localhost}", overwritehost ?? host));
-
-            string app = IO.File.ReadAllText($"{folder}/samsung/app.js");
-            IO.File.WriteAllText($"{folder}/samsung/publish/app.js", app.Replace("{localhost}", overwritehost ?? host));
-
-            IO.File.Copy($"{folder}/samsung/icon.png", $"{folder}/samsung/publish/icon.png", overwrite: true);
-            IO.File.Copy($"{folder}/samsung/logo_appname_fg.png", $"{folder}/samsung/publish/logo_appname_fg.png", overwrite: true);
-            IO.File.Copy($"{folder}/samsung/config.xml", $"{folder}/samsung/publish/config.xml", overwrite: true);
-
-            string gethash(string file)
+            try
             {
-                using (SHA512 sha = SHA512.Create())
+                IO.Directory.CreateDirectory(publishDir);
+
+                string index = IO.File.ReadAllText($"{folder}/samsung/index.html");
+                IO.File.WriteAllText($"{publishDir}/index.html", index.Replace("{localhost}", overwritehost ?? host));
+
+                string loader = IO.File.ReadAllText($"{folder}/samsung/loader.js");
+                IO.File.WriteAllText($"{publishDir}/loader.js", loader.Replace("{localhost}", overwritehost ?? host));
+
+                string app = IO.File.ReadAllText($"{folder}/samsung/app.js");
+                IO.File.WriteAllText($"{publishDir}/app.js", app.Replace("{localhost}", overwritehost ?? host));
+
+                IO.File.Copy($"{folder}/samsung/icon.png", $"{publishDir}/icon.png", overwrite: true);
+                IO.File.Copy($"{folder}/samsung/logo_appname_fg.png", $"{publishDir}/logo_appname_fg.png", overwrite: true);
+                IO.File.Copy($"{folder}/samsung/config.xml", $"{publishDir}/config.xml", overwrite: true);
+
+                string gethash(string file)
                 {
-                    return Convert.ToBase64String(sha.ComputeHash(IO.File.ReadAllBytes(file)));
-                    //digestValue = hash.Remove(76) + "\n" + hash.Remove(0, 76);
+                    using (SHA512 sha = SHA512.Create())
+                    {
+                        return Convert.ToBase64String(sha.ComputeHash(IO.File.ReadAllBytes(file)));
+                        //digestValue = hash.Remove(76) + "\n" + hash.Remove(0, 76);
+                    }
+                }
+
+                string indexhashsha512 = gethash($"{publishDir}/index.html");
+                string loaderhashsha512 = gethash($"{publishDir}/loader.js");
+                string apphashsha512 = gethash($"{publishDir}/app.js");
+                string confighashsha512 = gethash($"{publishDir}/config.xml");
+                string iconhashsha512 = gethash($"{publishDir}/icon.png");
+                string logohashsha512 = gethash($"{publishDir}/logo_appname_fg.png");
+
+                string author_sigxml = IO.File.ReadAllText($"{folder}/samsung/author-signature.xml");
+                author_sigxml = author_sigxml.Replace("loaderhashsha512", loaderhashsha512).Replace("apphashsha512", apphashsha512)
+                                             .Replace("iconhashsha512", iconhashsha512).Replace("logohashsha512", logohashsha512)
+                                             .Replace("confighashsha512", confighashsha512)
+                                             .Replace("indexhashsha512", indexhashsha512);
+                IO.File.WriteAllText($"{publishDir}/author-signature.xml", author_sigxml);
+
+                string authorsignaturehashsha512 = gethash($"{publishDir}/author-signature.xml");
+                string sigxml1 = IO.File.ReadAllText($"{folder}/samsung/signature1.xml");
+                sigxml1 = sigxml1.Replace("loaderhashsha512", loaderhashsha512).Replace("apphashsha512", apphashsha512)
+                                 .Replace("confighashsha512", confighashsha512).Replace("authorsignaturehashsha512", authorsignaturehashsha512)
+                                 .Replace("iconhashsha512", iconhashsha512).Replace("logohashsha512", logohashsha512).Replace("indexhashsha512", indexhashsha512);
+                IO.File.WriteAllText($"{publishDir}/signature1.xml", sigxml1);
+
+                // Why (M-26): the cached .wgt path is hashed on overwritehost/host so two
+                // different hosts get different zips and the cache hit above still works.
+                // Build into a temp file first and move to the final path to avoid serving
+                // a half-written zip if another request arrives mid-creation.
+                string wgtTmp = wgt + ".tmp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+                ZipFile.CreateFromDirectory(publishDir, wgtTmp);
+
+                try
+                {
+                    IO.File.Move(wgtTmp, wgt, overwrite: true);
+                }
+                catch
+                {
+                    // Another concurrent request produced the same cached wgt first; drop ours.
+                    try { if (IO.File.Exists(wgtTmp)) IO.File.Delete(wgtTmp); } catch { }
                 }
             }
-
-            string indexhashsha512 = gethash($"{folder}/samsung/publish/index.html");
-            string loaderhashsha512 = gethash($"{folder}/samsung/publish/loader.js");
-            string apphashsha512 = gethash($"{folder}/samsung/publish/app.js");
-            string confighashsha512 = gethash($"{folder}/samsung/publish/config.xml");
-            string iconhashsha512 = gethash($"{folder}/samsung/publish/icon.png");
-            string logohashsha512 = gethash($"{folder}/samsung/publish/logo_appname_fg.png");
-
-            string author_sigxml = IO.File.ReadAllText($"{folder}/samsung/author-signature.xml");
-            author_sigxml = author_sigxml.Replace("loaderhashsha512", loaderhashsha512).Replace("apphashsha512", apphashsha512)
-                                         .Replace("iconhashsha512", iconhashsha512).Replace("logohashsha512", logohashsha512)
-                                         .Replace("confighashsha512", confighashsha512)
-                                         .Replace("indexhashsha512", indexhashsha512);
-            IO.File.WriteAllText($"{folder}/samsung/publish/author-signature.xml", author_sigxml);
-
-            string authorsignaturehashsha512 = gethash($"{folder}/samsung/publish/author-signature.xml");
-            string sigxml1 = IO.File.ReadAllText($"{folder}/samsung/signature1.xml");
-            sigxml1 = sigxml1.Replace("loaderhashsha512", loaderhashsha512).Replace("apphashsha512", apphashsha512)
-                             .Replace("confighashsha512", confighashsha512).Replace("authorsignaturehashsha512", authorsignaturehashsha512)
-                             .Replace("iconhashsha512", iconhashsha512).Replace("logohashsha512", logohashsha512).Replace("indexhashsha512", indexhashsha512);
-            IO.File.WriteAllText($"{folder}/samsung/publish/signature1.xml", sigxml1);
-
-            ZipFile.CreateFromDirectory($"{folder}/samsung/publish/", wgt);
+            finally
+            {
+                // Why (M-26): always nuke the per-request dir so substituted {localhost}
+                // values and hash files from this request don't leak into the next one.
+                try
+                {
+                    if (IO.Directory.Exists(publishDir))
+                        IO.Directory.Delete(publishDir, recursive: true);
+                }
+                catch { }
+            }
 
             return File(IO.File.OpenRead(wgt), "application/octet-stream");
         }

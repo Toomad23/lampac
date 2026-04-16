@@ -150,6 +150,17 @@ namespace Shared
 
         async public ValueTask<bool> IsRequestBlocked(bool? rch = null, int? rch_keepalive = null, bool rch_check = true)
         {
+            // Why (M-23): server-side adult gate. The client manifest at /on/h/{token}
+            // deliberately omits the SISI plugin (see LampaWebController.LamOnInit),
+            // but without this check a client that guesses/scrapes /phub/*, /xmr/*,
+            // /sisi/* etc. still receives content. Default-off via
+            // sisi.require_adult_flag; when on, require explicit adult=true|1 query.
+            if (AppInit.conf.sisi?.require_adult_flag == true && !IsAdultRequestAllowed(HttpContext))
+            {
+                badInitMsg = OnError("adult content not allowed", rcache: false, statusCode: 403);
+                return true;
+            }
+
             if (IsLoadKit(init))
             {
                 if (loadKitInitialization != null)
@@ -563,6 +574,27 @@ namespace Shared
         #region headerKeys
         public string headerKeys(string key, params string[] headersKey)
             => headerKeys(key, proxyManager, rch, headersKey);
+        #endregion
+
+        #region IsAdultRequestAllowed
+        // Why (M-23): tiny helper exposed so the non-SISI /sisi entry in
+        // SisiApiController (which inherits BaseController, not BaseSisiController)
+        // can share the exact same predicate. Accepts adult=true / adult=1 and
+        // rejects missing/other values. Values are compared case-insensitively.
+        public static bool IsAdultRequestAllowed(HttpContext ctx)
+        {
+            if (ctx == null)
+                return false;
+
+            if (!ctx.Request.Query.TryGetValue("adult", out var v))
+                return false;
+
+            string s = v.ToString();
+            if (string.IsNullOrEmpty(s))
+                return false;
+
+            return s.Equals("true", StringComparison.OrdinalIgnoreCase) || s == "1";
+        }
         #endregion
     }
 }

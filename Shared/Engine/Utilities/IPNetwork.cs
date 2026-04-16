@@ -2,6 +2,31 @@
 {
     public static class IPNetwork
     {
+        // Why (FC-1): IsLocalIp returns true for the entire RFC1918/ULA space
+        // (10/8, 172.16/12, 192.168/16, fc00::/7) — useful for "private
+        // network" classification (WAF bypass, Accsdb allowExternalIpAccess).
+        // But it is NOT a safe "proof of loopback" gate: a LAN attacker on
+        // 192.168.0.x would satisfy it. Auth gates that must truly prove the
+        // peer is the host itself (fresh-install manifest, DLNA mutations
+        // without Accsdb, xhost/xscheme trust, x-client-ip override) need
+        // IsStrictLoopback — only 127.0.0.0/8 and ::1.
+        public static bool IsStrictLoopback(string ip)
+        {
+            if (string.IsNullOrWhiteSpace(ip))
+                return false;
+
+            // Normalise IPv4-mapped IPv6 (::ffff:127.0.0.1) to IPv4 text so
+            // TryParse + IsLoopback treat it the same as 127.0.0.1.
+            var lastColon = ip.LastIndexOf(':');
+            if (lastColon != -1 && ip.Contains("."))
+                ip = ip.Substring(lastColon + 1);
+
+            if (!System.Net.IPAddress.TryParse(ip, out var addr))
+                return false;
+
+            return System.Net.IPAddress.IsLoopback(addr);
+        }
+
         public static bool IsLocalIp(string ip)
         {
             if (string.IsNullOrWhiteSpace(ip))

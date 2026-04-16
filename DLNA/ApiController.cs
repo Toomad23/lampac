@@ -734,13 +734,17 @@ namespace DLNA.Controllers
         // reaching the listener can delete files, queue torrents, stop/start
         // downloads, etc. Require loopback in that deployment mode; when
         // Accsdb is enabled it already gates these paths.
+        //
+        // Why (FC-1): previously this used IsLocalIp, which also accepts
+        // RFC1918/ULA peers — any LAN host could delete files. Strictly
+        // require 127/8 or ::1.
         bool IsDlnaMutationForbidden()
         {
             if (AppInit.conf.accsdb.enable)
                 return false;
 
             string ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-            return !Shared.Engine.Utilities.IPNetwork.IsLocalIp(ip);
+            return !Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(ip);
         }
 
         #region Delete

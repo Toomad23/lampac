@@ -58,15 +58,15 @@ namespace Lampac.Engine.Middlewares
             {
                 if (httpContext.Request.Cookies.TryGetValue("passwd", out string passwd))
                 {
+                    if (passwd == AppInit.rootPasswd)
+                        return _next(httpContext);
+
+                    // Wrong password — increment brute force counter and apply backoff
                     int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
                     if (attempts > 10)
                         return httpContext.Response.WriteAsync("Too many attempts, try again tomorrow.", httpContext.RequestAborted);
 
-                    if (passwd == AppInit.rootPasswd)
-                        return _next(httpContext);
-
-                    // Wrong password — apply exponential backoff then fall through to redirect
                     return AdminBruteGuard.BackoffAsync(attempts).ContinueWith(_ =>
                     {
                         httpContext.Response.Redirect("/admin/auth");
@@ -313,20 +313,24 @@ namespace Lampac.Engine.Middlewares
 
 
         #region setLogs
+        static readonly object _logsLockObj = new object();
         static string logsLock = string.Empty;
 
         static void setLogs(string name, string account_email)
         {
-            string logFile = $"cache/logs/accsdb/{DateTime.Now:dd-MM-yyyy}.lock.txt";
-            if (logsLock != string.Empty && !File.Exists(logFile))
-                logsLock = string.Empty;
-
-            string line = $"{name} / {account_email} / {CrypTo.md5(account_email)}.*.log";
-
-            if (!logsLock.Contains(line))
+            lock (_logsLockObj)
             {
-                logsLock += $"{DateTime.Now}: {line}\n";
-                File.WriteAllText(logFile, logsLock);
+                string logFile = $"cache/logs/accsdb/{DateTime.Now:dd-MM-yyyy}.lock.txt";
+                if (logsLock != string.Empty && !File.Exists(logFile))
+                    logsLock = string.Empty;
+
+                string line = $"{name} / {account_email} / {CrypTo.md5(account_email)}.*.log";
+
+                if (!logsLock.Contains(line))
+                {
+                    logsLock += $"{DateTime.Now}: {line}\n";
+                    File.WriteAllText(logFile, logsLock);
+                }
             }
         }
         #endregion

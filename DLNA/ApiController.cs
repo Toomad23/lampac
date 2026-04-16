@@ -505,6 +505,9 @@ namespace DLNA.Controllers
             }
             #endregion
 
+            if (!string.IsNullOrEmpty(path) && !TryResolveInsideDlna(path, out _))
+                return Json(new { error = "invalid path" });
+
             var playlist = new List<DlnaModel>();
 
             #region folders
@@ -868,7 +871,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Download
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/download")]
         async public Task<JsonResult> Download(string path, int[] indexs, string thumb, long id, bool serial, int lastCount = -1)
         {
@@ -1121,7 +1124,7 @@ namespace DLNA.Controllers
 
 
         #region Delete
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/stop")]
         [Route("dlna/tracker/delete")]
         async public Task<JsonResult> TorrentDelete(string infohash)
@@ -1153,7 +1156,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Pause
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/pause")]
         async public Task<JsonResult> TorrentPause(string infohash)
         {
@@ -1169,7 +1172,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Start
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/start")]
         async public Task<JsonResult> TorrentStart(string infohash)
         {
@@ -1185,7 +1188,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region ChangeFilePriority
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/changefilepriority")]
         async public Task<JsonResult> ChangeFilePriority(string infohash, int[] indexs)
         {

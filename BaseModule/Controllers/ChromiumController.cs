@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shared;
+using System.Web;
 
 namespace Lampac.Controllers
 {
@@ -17,6 +18,7 @@ namespace Lampac.Controllers
         [Route("/api/chromium/iframe")]
         public ActionResult RenderIframe(string src)
         {
+            string safeSrc = HttpUtility.HtmlAttributeEncode(src ?? "");
             return ContentTo($@"<html lang=""ru"">
                 <head>
                     <meta charset=""UTF-8"">
@@ -25,7 +27,7 @@ namespace Lampac.Controllers
                     <title>chromium iframe</title>
                 </head>
                 <body>
-                    <iframe width=""560"" height=""400"" src=""{src}"" frameborder=""0"" allow=""*"" allowfullscreen></iframe>
+                    <iframe width=""560"" height=""400"" src=""{safeSrc}"" frameborder=""0"" allow=""*"" allowfullscreen></iframe>
                 </body>
             </html>");
         }

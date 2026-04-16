@@ -1025,10 +1025,18 @@ namespace Shared
         #region RedirectToPlay
         public RedirectResult RedirectToPlay(string url)
         {
-            if (!url.Contains(" "))
-                return new RedirectResult(url);
+            string target = url != null && url.Contains(" ") ? url.Split(" ")[0].Trim() : url;
 
-            return new RedirectResult(url.Split(" ")[0].Trim());
+            // Without a scheme check, a compromised upstream that returns
+            // "javascript:alert(document.cookie)" (or data:text/html,...) as the
+            // stream URL would execute on the Lampac origin when the victim
+            // opens the ?play=true endpoint in a browser. Reject non-http(s)
+            // redirects to about:blank.
+            if (!Uri.TryCreate(target, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+                return new RedirectResult("about:blank");
+
+            return new RedirectResult(target);
         }
         #endregion
 

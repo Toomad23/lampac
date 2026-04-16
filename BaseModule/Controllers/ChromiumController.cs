@@ -18,7 +18,14 @@ namespace Lampac.Controllers
         [Route("/api/chromium/iframe")]
         public ActionResult RenderIframe(string src)
         {
-            string safeSrc = HttpUtility.HtmlAttributeEncode(src ?? "");
+            // HtmlAttributeEncode alone stops quote-breakout but still lets
+            // "javascript:..." / "data:..." URIs execute inside the iframe's
+            // src. Require an absolute http(s) URL before embedding.
+            if (!Uri.TryCreate(src, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+                return StatusCode(400);
+
+            string safeSrc = HttpUtility.HtmlAttributeEncode(parsed.AbsoluteUri);
             return ContentTo($@"<html lang=""ru"">
                 <head>
                     <meta charset=""UTF-8"">

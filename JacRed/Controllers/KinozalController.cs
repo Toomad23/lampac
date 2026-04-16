@@ -23,12 +23,19 @@ namespace JacRed.Controllers
             if (!jackett.Kinozal.enable)
                 return Content("disable");
 
+            // Why (FM-15): `id` is attacker-controlled and interpolated into both the torrent
+            // download URL and the get_srv_details.php call (which POSTs with the session cookie).
+            // Non-numeric values pivot the request and inject extra query parameters. Mirror the
+            // Rutracker pattern.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             var proxyManager = new ProxyManager("kinozal", jackett.Kinozal);
 
             #region Download
             if (jackett.Kinozal.cookie != null || Cookie != null)
             {
-                var _t = await Http.Download("http://dl.kinozal.tv/download.php?id=" + id, proxy: proxyManager.Get(), cookie: jackett.Kinozal.cookie ?? Cookie, referer: jackett.Kinozal.host, timeoutSeconds: 10);
+                var _t = await Http.Download("http://dl.kinozal.tv/download.php?id=" + tid, proxy: proxyManager.Get(), cookie: jackett.Kinozal.cookie ?? Cookie, referer: jackett.Kinozal.host, timeoutSeconds: 10);
                 if (_t != null && BencodeTo.Magnet(_t) != null)
                     return File(_t, "application/x-bittorrent");
             }
@@ -41,7 +48,7 @@ namespace JacRed.Controllers
             if (string.IsNullOrEmpty(kinozalCookie))
                 return Content("error");
 
-            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={id}&action=2", $"id={id}&action=2", kinozalCookie, proxy: proxyManager.Get(), timeoutSeconds: 10);
+            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={tid}&action=2", $"id={tid}&action=2", kinozalCookie, proxy: proxyManager.Get(), timeoutSeconds: 10);
             if (srv_details != null)
             {
                 string torrentHash = new Regex("<ul><li>Инфо хеш: +([^<]+)</li>").Match(srv_details).Groups[1].Value;

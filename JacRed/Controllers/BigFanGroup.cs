@@ -22,9 +22,14 @@ namespace JacRed.Controllers
             if (!jackett.BigFanGroup.enable)
                 return Content("disable");
 
+            // Why (FM-15): `id` is attacker-controlled and interpolated into the download URL.
+            // Non-numeric values pivot and parameter-inject. Mirror the Rutracker pattern.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             var proxyManager = new ProxyManager("bigfangroup", jackett.BigFanGroup);
 
-            var _t = await Http.Download($"{jackett.BigFanGroup.host}/download.php?id={id}", proxy: proxyManager.Get(), referer: jackett.BigFanGroup.host);
+            var _t = await Http.Download($"{jackett.BigFanGroup.host}/download.php?id={tid}", proxy: proxyManager.Get(), referer: jackett.BigFanGroup.host);
             if (_t != null && BencodeTo.Magnet(_t) != null)
                 return File(_t, "application/x-bittorrent");
 
@@ -100,8 +105,10 @@ namespace JacRed.Controllers
                     case "12":
                     case "20":
                     case "47":
-                        types = new string[] { "multfilm" };
-                        types = new string[] { "multserial" };
+                        // Why (FL-13): the previous code assigned `multfilm` then immediately
+                        // overwrote it with `multserial`, losing the multfilm classification and
+                        // skipping any cat filter for it. Combine both types in one array.
+                        types = new string[] { "multfilm", "multserial" };
                         break;
                     case "11":
                         types = new string[] { "serial" };

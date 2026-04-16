@@ -23,6 +23,15 @@ namespace JacRed.Controllers
             if (!jackett.Selezen.enable)
                 return Content("disable");
 
+            // Why (FH-13): `url` is attacker-controlled and is fetched with the operator's
+            // Selezen session cookie. Without a host allow-list, an attacker crafting parselink
+            // can exfiltrate cookies to any server. Require the URL to live on the configured
+            // Selezen host — parsePage always emits absolute URLs from that host.
+            string selezenHost = jackett.Selezen.host ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(selezenHost) ||
+                !url.StartsWith(selezenHost.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase))
+                return Content("invalid url");
+
             string cookie = await getCookie();
             if (string.IsNullOrEmpty(cookie))
                 return Content("cookie == null");

@@ -90,7 +90,22 @@ namespace JacRed.Controllers
             if (ModInit.conf.typesearch == "red")
             {
                 #region red
-                string memoryKey = $"{ModInit.conf.typesearch}:{query}:{rqnum}:{title}:{title_original}:{year}:{is_serial}";
+                // Why (FM-14): `query`, `title`, `title_original` are attacker-controlled. Cap each
+                // component at MaxQueryLength (matching the existing protection at line ~43) and
+                // md5-fingerprint the composite when it still exceeds 256 chars so cache keys can't
+                // be blown up one entry per adversarial input.
+                string qCap = query == null ? null : (query.Length > MaxQueryLength ? query.Substring(0, MaxQueryLength) : query);
+                string tCap = title == null ? null : (title.Length > MaxQueryLength ? title.Substring(0, MaxQueryLength) : title);
+                string toCap = title_original == null ? null : (title_original.Length > MaxQueryLength ? title_original.Substring(0, MaxQueryLength) : title_original);
+
+                string memoryKey = $"{ModInit.conf.typesearch}:{qCap}:{rqnum}:{tCap}:{toCap}:{year}:{is_serial}";
+                if (memoryKey.Length > 256)
+                {
+                    using var md5 = System.Security.Cryptography.MD5.Create();
+                    byte[] hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(memoryKey));
+                    memoryKey = $"{ModInit.conf.typesearch}:md5:" + Convert.ToHexString(hash);
+                }
+
                 if (!hybridCache.TryGetValue(memoryKey, out List<TorrentDetails> _redCache, inmemory: false))
                 {
                     var res = RedApi.Indexers(rqnum, apikey, query, title, title_original, year, is_serial, category);

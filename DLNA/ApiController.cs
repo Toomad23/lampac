@@ -1110,8 +1110,11 @@ namespace DLNA.Controllers
                                         if (string.IsNullOrEmpty(seasons))
                                             seasons = await Http.Get($"https://apitmdb.{AppInit.conf.cub.mirror}/3/{cat}/{id}/season/{s}?api_key={AppInit.conf.tmdb.api_key}&language=ru", timeoutSeconds: 20);
 
+                                        // Why: L-9 — the season cache is expected to contain the per-season
+                                        // payload (`seasons`), not the full show metadata (`json`). Using
+                                        // `json` here corrupted the season cache for every DLNA download.
                                         if (!string.IsNullOrEmpty(seasons))
-                                            IO.File.WriteAllText($"{dlna_path}/tmdb/{id}_season-{s}.json", json);
+                                            IO.File.WriteAllText($"{dlna_path}/tmdb/{id}_season-{s}.json", seasons);
                                     }
 
                                     if (number_of_seasons == 1)

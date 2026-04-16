@@ -50,7 +50,27 @@ namespace Tracks.Controllers
             if (media.Contains("/dlna/stream"))
             {
                 string path = Regex.Match(media, "\\?path=([^&]+)").Groups[1].Value;
-                if (!System.IO.File.Exists("dlna/" + HttpUtility.UrlDecode(path)))
+
+                // Why: M-21 — without canonicalisation "?path=..%2F..%2Fetc%2Fpasswd" probes
+                // arbitrary filesystem locations via the "path" vs "{}" response, giving the
+                // caller a filesystem-enumeration oracle. Canonicalise both the base dir and
+                // the resolved candidate and require the candidate to live under the base.
+                bool insideDlna = false;
+                try
+                {
+                    string decoded = HttpUtility.UrlDecode(path) ?? string.Empty;
+                    string dlnaRoot = System.IO.Path.GetFullPath("dlna") + System.IO.Path.DirectorySeparatorChar;
+                    string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine("dlna", decoded));
+
+                    insideDlna = candidate.StartsWith(dlnaRoot, StringComparison.Ordinal) &&
+                                 System.IO.File.Exists(candidate);
+                }
+                catch
+                {
+                    insideDlna = false;
+                }
+
+                if (!insideDlna)
                     return showerror ? "path" : "{}";
 
                 magnethash = path;

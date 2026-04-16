@@ -6,7 +6,10 @@ namespace Shared.Engine
 {
     public static class AccsToken
     {
-        static byte[] _hmacKey;
+        const int SignatureBytes = 20; // 160 bits of HMAC-SHA256 — sufficient for MAC truncation
+        const int SignatureHexLen = SignatureBytes * 2; // 40 hex chars
+
+        static volatile byte[] _hmacKey;
 
         public static void Init(string hmacSecret)
         {
@@ -31,7 +34,7 @@ namespace Shared.Engine
             string payload = $"{uidB64}.{expiry}";
 
             byte[] sig = ComputeSignature(payload);
-            return $"{payload}.{Convert.ToHexString(sig, 0, 20).ToLower()}";
+            return $"{payload}.{Convert.ToHexString(sig, 0, SignatureBytes).ToLower()}";
         }
 
         public static (string uid, bool valid) Verify(string token)
@@ -51,15 +54,13 @@ namespace Shared.Engine
             string expiryStr = token.Substring(firstDot + 1, secondDot - firstDot - 1);
             string sigHex = token.Substring(secondDot + 1);
 
-            if (sigHex.Length != 40)
+            if (sigHex.Length != SignatureHexLen)
                 return (null, false);
 
             if (!long.TryParse(expiryStr, out long expiry))
                 return (null, false);
 
-            if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiry)
-                return (null, false);
-
+            // Verify signature before checking expiry to avoid timing oracle
             string payload = $"{uidB64}.{expiryStr}";
             byte[] expected = ComputeSignature(payload);
             byte[] actual;
@@ -73,7 +74,10 @@ namespace Shared.Engine
                 return (null, false);
             }
 
-            if (!CryptographicOperations.FixedTimeEquals(expected.AsSpan(0, 20), actual))
+            if (!CryptographicOperations.FixedTimeEquals(expected.AsSpan(0, SignatureBytes), actual))
+                return (null, false);
+
+            if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiry)
                 return (null, false);
 
             string uid = Base64UrlDecode(uidB64);
@@ -85,7 +89,8 @@ namespace Shared.Engine
 
         public static bool IsHmacToken(string value)
         {
-            if (string.IsNullOrEmpty(value) || value.Length < 44)
+            // Minimum: 1-char base64url uid + '.' + 10-digit expiry + '.' + 40-char sig = 53
+            if (string.IsNullOrEmpty(value) || value.Length < 53)
                 return false;
 
             int dots = 0;
@@ -99,7 +104,7 @@ namespace Shared.Engine
                 }
             }
 
-            return dots == 2 && lastDot > 0 && (value.Length - lastDot - 1) == 40;
+            return dots == 2 && lastDot > 0 && (value.Length - lastDot - 1) == SignatureHexLen;
         }
 
         static byte[] ComputeSignature(string payload)
@@ -124,6 +129,7 @@ namespace Shared.Engine
                 string padded = value.Replace('-', '+').Replace('_', '/');
                 switch (padded.Length % 4)
                 {
+                    case 1: return null; // invalid base64url length
                     case 2: padded += "=="; break;
                     case 3: padded += "="; break;
                 }

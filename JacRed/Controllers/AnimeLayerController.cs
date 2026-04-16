@@ -207,7 +207,10 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"JacRed/animelayer getCookie: {ex.Message}"); }
+            // Why (FL-16): log only the exception type — a misconfigured tracker account or
+            // network error used to leak URLs, credentials snippets, or HTML fragments into
+            // stdout where container logs could persist them.
+            catch (Exception ex) { Console.WriteLine($"JacRed/animelayer getCookie: {ex.GetType().Name}"); }
 
             return null;
         }

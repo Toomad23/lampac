@@ -385,7 +385,9 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"JacRed/toloka getCookie: {ex.Message}"); }
+            // Why (FL-16): type only — never the raw ex.Message (may contain URLs, credentials,
+            // HTML fragments that shouldn't reach stdout/container logs).
+            catch (Exception ex) { Console.WriteLine($"JacRed/toloka getCookie: {ex.GetType().Name}"); }
 
             return null;
         }

@@ -23,13 +23,20 @@ namespace JacRed.Controllers
             if (!jackett.Animelayer.enable)
                 return Content("disable");
 
+            // Why (FH-14): `url` is attacker-controlled and is used to build the AnimeLayer
+            // download URL fetched with the operator's session cookie. Without validation,
+            // a crafted parselink exfiltrates cookies to any host. Accept only an AnimeLayer
+            // torrent slug (matches the scraper's regex) and reconstruct the URL server-side.
+            if (string.IsNullOrWhiteSpace(url) || !Regex.IsMatch(url, "^torrent/[a-z0-9]+$", RegexOptions.IgnoreCase))
+                return Content("invalid url");
+
             string cookie = await getCookie();
             if (string.IsNullOrEmpty(cookie))
                 return Content("cookie == null");
 
             var proxyManager = new ProxyManager("animelayer", jackett.Animelayer);
 
-            byte[] _t = await Http.Download($"{url}download/", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Animelayer.host);
+            byte[] _t = await Http.Download($"{jackett.Animelayer.host}/{url}/download/", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Animelayer.host);
             if (_t != null && BencodeTo.Magnet(_t) != null)
                 return File(_t, "application/x-bittorrent");
 

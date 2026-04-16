@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
+using Shared.Engine;
 using Shared.Models.Online.Kodik;
 using Shared.Models.Online.Settings;
 using System.Buffers;
@@ -183,7 +184,9 @@ namespace Online.Controllers
                         return OnError();
                 }
 
-                return await InvkSemaphore($"kodik:view:stream:{link}:{init.secret_token}:{requestInfo.IP}", async key =>
+                // Why: fingerprint secret_token instead of embedding it raw in the cache key (H-14)
+                string tokenFp = CrypTo.md5(init.secret_token ?? string.Empty).Substring(0, 6);
+                return await InvkSemaphore($"kodik:view:stream:{link}:{tokenFp}:{requestInfo.IP}", async key =>
                 {
                     if (!hybridCache.TryGetValue(key, out (List<(string q, string url)> streams, SegmentTpl segments) cache))
                     {

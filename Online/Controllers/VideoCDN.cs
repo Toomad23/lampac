@@ -216,13 +216,17 @@ namespace Online.Controllers
             {
                 if (init.log)
                 {
+                    // Why: H-15 — do not spill the full VideoCDN accessToken (billing-capable API credential) to log files.
+                    // Replace raw token with a short md5 fingerprint so log entries can still be correlated without leaking the token.
+                    string accessTokenFp = string.IsNullOrEmpty(accessToken) ? string.Empty : CrypTo.md5(accessToken).Substring(0, 6);
+
                     string data = System.Text.Json.JsonSerializer.Serialize(new
                     {
                         time = DateTime.Now,
                         requestInfo.Country,
                         requestInfo.IP,
                         requestInfo.UserAgent,
-                        video = new { content_id, content_type, playlist, accessToken }
+                        video = new { content_id, content_type, playlist, accessTokenFp }
                     });
 
                     string patchlog = $"cache/logs/VideoCDN/{DateTime.Today:dd-MM}.txt";

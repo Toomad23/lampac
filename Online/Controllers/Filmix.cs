@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
+using Shared.Engine;
 using Shared.Models.Online.Settings;
 
 namespace Online.Controllers
@@ -89,7 +90,9 @@ namespace Online.Controllers
             }
 
             rhubFallback:
-            var cache = await InvokeCacheResult($"filmix:post:{postid}:{token}", 20, 
+            // Why: fingerprint user token instead of embedding it raw in the cache key (H-14)
+            string tokenFp = CrypTo.md5(token ?? string.Empty).Substring(0, 6);
+            var cache = await InvokeCacheResult($"filmix:post:{postid}:{tokenFp}", 20,
                 () => oninvk.Post(postid)
             );
 

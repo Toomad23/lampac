@@ -69,8 +69,8 @@ namespace Shared.Models.AppConf
                 return null;
             }
 
-            // 2. If HMAC required, reject bare lookups
-            if (require_hmac_token && AccsToken.IsEnabled)
+            // 2. If HMAC required, reject bare lookups (even if hmac_secret is missing)
+            if (require_hmac_token)
             {
                 uid = null;
                 return null;

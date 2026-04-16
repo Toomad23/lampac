@@ -284,6 +284,8 @@ namespace Shared
             {
                 Console.WriteLine($"DeserializeObject Exception init.yaml:\n{ex}\n\n");
             }
+
+            AccsToken.Init(conf.accsdb.hmac_secret);
         }
         #endregion
 

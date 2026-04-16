@@ -15,17 +15,19 @@ namespace Lampac.Controllers
                 return Redirect("/admin/auth");
 
             if (!AccsToken.IsEnabled)
-                return Content("hmac_secret not configured in accsdb", "text/plain");
+                return Json(new { error = "hmac_secret not configured in accsdb" });
 
             if (string.IsNullOrEmpty(uid))
-                return Content("uid parameter required", "text/plain");
+                return Json(new { error = "uid parameter required" });
 
             var user = AppInit.conf.accsdb.findUser(uid);
             if (user == null)
-                return Content($"user '{uid}' not found", "text/plain");
+                return Json(new { error = $"user '{uid}' not found" });
 
-            string token = AccsToken.Generate(user.id, DateTime.UtcNow.AddDays(days));
-            return Json(new { token, uid = user.id, expires = DateTime.UtcNow.AddDays(days).ToString("yyyy-MM-dd HH:mm:ss UTC") });
+            days = Math.Clamp(days, 1, 365);
+            var expiresAt = DateTime.UtcNow.AddDays(days);
+            string token = AccsToken.Generate(user.id, expiresAt);
+            return Json(new { token, uid = user.id, expires = expiresAt.ToString("yyyy-MM-dd HH:mm:ss UTC") });
         }
     }
 }

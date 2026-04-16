@@ -43,6 +43,8 @@ RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnet
  && rm dotnet.tar.gz
 
 COPY --from=build /publish/ /home/
+RUN mkdir -p runtimes/references module
+COPY --from=build /src/BaseModule/Controllers/ /home/basemod/Controllers/
 
 RUN mkdir -p torrserver \
  && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \

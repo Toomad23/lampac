@@ -25,7 +25,6 @@ namespace Lampac.Engine.Middlewares
         }
 
         private readonly RequestDelegate _next;
-        static bool manifestInitial = false;
         IMemoryCache memoryCache;
 
         public Accsdb(RequestDelegate next, IMemoryCache mem)
@@ -39,17 +38,20 @@ namespace Lampac.Engine.Middlewares
             var requestInfo = httpContext.Features.Get<RequestModel>();
 
             #region manifest/install
-            if (!manifestInitial)
+            // Why (FL-1): the previous implementation cached the
+            // File.Exists("module/manifest.json") result in a static bool and
+            // never re-checked it. If the manifest was deleted (or the module/
+            // directory wiped) after startup, the install redirect never fired
+            // again; conversely if the admin created the manifest after boot
+            // without restarting, the redirect loop persisted. The existence
+            // check is cheap so re-evaluate on every request inside this branch.
+            if (!File.Exists("module/manifest.json"))
             {
-                if (!File.Exists("module/manifest.json"))
-                {
-                    if (httpContext.Request.Path.Value.StartsWith("/admin/manifest/install", StringComparison.OrdinalIgnoreCase))
-                        return _next(httpContext);
+                if (httpContext.Request.Path.Value.StartsWith("/admin/manifest/install", StringComparison.OrdinalIgnoreCase))
+                    return _next(httpContext);
 
-                    httpContext.Response.Redirect("/admin/manifest/install");
-                    return Task.CompletedTask;
-                }
-                else { manifestInitial = true; }
+                httpContext.Response.Redirect("/admin/manifest/install");
+                return Task.CompletedTask;
             }
             #endregion
 

@@ -316,17 +316,26 @@ namespace Online.Controllers
                     if (page == null)
                         return null;
 
+                    // fileEncode is extracted from scraped HTML and was previously
+                    // interpolated straight into a <script> block. A single quote
+                    // or closing </script> tag in the scraped value escaped the
+                    // intended string and executed attacker JS inside the headless
+                    // browser (pivot to internal network via fetch, exfil of other
+                    // cookies, crash). Load the player library first, then hand
+                    // fileEncode across the boundary as a bound argument so the
+                    // JSON engine — not string concatenation — handles quoting.
                     var html = $@"<!doctype html>
                         <html lang=""ru"">
                           <body>
                             <script>
                               {FileCache.ReadAllText("data/cinemar_playerjs.js")}
-                              Cinemar({{""file"":""{fileEncode}""}})
                             </script>
                           </body>
                         </html>";
 
                     await page.SetContentAsync(html).ConfigureAwait(false);
+
+                    await page.EvaluateAsync("fileEncode => { Cinemar({ file: fileEncode }); }", fileEncode).ConfigureAwait(false);
 
                     return await page.EvaluateAsync<string>("() => JSON.stringify(window.playlist)");
                 }

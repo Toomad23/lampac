@@ -151,7 +151,12 @@ namespace Online.Controllers
                     return true;
 
                 string url = "https://login.vk.com/?act=get_anonym_token";
-                string postData = $"client_secret=o557NLIkAErNhakXrQ7A&client_id={client_id}&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487";
+                // Why: L-8 — avoid hardcoding the VK anonymous OAuth client_secret. Allow operators to override via AppInit.conf.VkMovie.client_secret.
+                // Fallback preserves the shared VK-XBMC client secret so existing deployments keep working when the setting is unset.
+                string clientSecret = AppInit.conf.VkMovie?.client_secret;
+                if (string.IsNullOrEmpty(clientSecret))
+                    clientSecret = "o557NLIkAErNhakXrQ7A"; // shared VK-XBMC anonymous client secret (public fallback)
+                string postData = $"client_secret={clientSecret}&client_id={client_id}&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487";
 
                 JObject root = null;
 

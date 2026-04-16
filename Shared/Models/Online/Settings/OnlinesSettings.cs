@@ -26,6 +26,10 @@ namespace Shared.Models.Online.Settings
 
         public bool imitationHuman { get; set; }
 
+        // Why: L-8 — operator-configurable OAuth client_secret (used by VkMovie to override the hardcoded VK anonymous client secret).
+        // Nullable: when null/empty the consumer falls back to the original shared value, so behaviour is unchanged for existing configs.
+        public string client_secret { get; set; }
+
 
         public OnlinesSettings Clone()
         {

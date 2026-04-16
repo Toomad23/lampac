@@ -150,6 +150,17 @@ namespace Shared
 
         async public ValueTask<bool> IsRequestBlocked(bool? rch = null, int? rch_keepalive = null, bool rch_check = true)
         {
+            // Why (M-23): server-side adult gate. The client manifest at /on/h/{token}
+            // deliberately omits the SISI plugin (see LampaWebController.LamOnInit),
+            // but without this check a client that guesses/scrapes /phub/*, /xmr/*,
+            // /sisi/* etc. still receives content. Default-off via
+            // sisi.require_adult_flag; when on, require explicit adult=true|1 query.
+            if (AppInit.conf.sisi?.require_adult_flag == true && !IsAdultRequestAllowed(HttpContext))
+            {
+                badInitMsg = OnError("adult content not allowed", rcache: false, statusCode: 403);
+                return true;
+            }
+
             if (IsLoadKit(init))
             {
                 if (loadKitInitialization != null)
@@ -510,13 +521,20 @@ namespace Shared
         #endregion
 
         #region Semaphore
-        public Task<ActionResult> SemaphoreResult(string key, Func<(string key, SemaphorManager semaphore), Task<ActionResult>> func) 
+        // Why (L-5): previously this method constructed a SemaphorManager, synchronously returned
+        // the caller's Task, and released in `finally` — so (a) Release fired before the task body
+        // actually executed, and (b) WaitAsync was never called, so the lock was never held and
+        // the serialisation contract was silently broken. Make the body async, acquire the lock
+        // via WaitAsync, and release in `finally` AFTER awaiting `func`. The ctor already marks
+        // the refcount via AcquireEntry; the WaitAsync here actually enforces mutual exclusion.
+        public async Task<ActionResult> SemaphoreResult(string key, Func<(string key, SemaphorManager semaphore), Task<ActionResult>> func)
         {
             var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(30));
 
             try
             {
-                return func.Invoke((key, semaphore));
+                await semaphore.WaitAsync();
+                return await func.Invoke((key, semaphore));
             }
             finally
             {
@@ -556,6 +574,27 @@ namespace Shared
         #region headerKeys
         public string headerKeys(string key, params string[] headersKey)
             => headerKeys(key, proxyManager, rch, headersKey);
+        #endregion
+
+        #region IsAdultRequestAllowed
+        // Why (M-23): tiny helper exposed so the non-SISI /sisi entry in
+        // SisiApiController (which inherits BaseController, not BaseSisiController)
+        // can share the exact same predicate. Accepts adult=true / adult=1 and
+        // rejects missing/other values. Values are compared case-insensitively.
+        public static bool IsAdultRequestAllowed(HttpContext ctx)
+        {
+            if (ctx == null)
+                return false;
+
+            if (!ctx.Request.Query.TryGetValue("adult", out var v))
+                return false;
+
+            string s = v.ToString();
+            if (string.IsNullOrEmpty(s))
+                return false;
+
+            return s.Equals("true", StringComparison.OrdinalIgnoreCase) || s == "1";
+        }
         #endregion
     }
 }

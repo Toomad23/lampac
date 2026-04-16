@@ -104,8 +104,12 @@ namespace Lampac.Engine.Middlewares
                     if (string.IsNullOrEmpty(country))
                     {
                         var ipify = await Http.Get<JObject>("https://api.ipify.org/?format=json");
-                        if (ipify != null || !string.IsNullOrEmpty(ipify.Value<string>("ip")))
-                            country = GeoIP2.Country(ipify.Value<string>("ip"));
+                        // Why: L-1 — original code used `||` so when ipify == null the second
+                        // operand dereferenced null → NRE → caught by ASP.NET → 500. Use `&&`
+                        // and a null-conditional access so an ipify outage silently returns "".
+                        string ipifyIp = ipify?.Value<string>("ip");
+                        if (ipify != null && !string.IsNullOrEmpty(ipifyIp))
+                            country = GeoIP2.Country(ipifyIp);
                     }
 
                     await httpContext.Response.WriteAsync(country ?? "", ctsHttp.Token);

@@ -3,6 +3,8 @@ using Shared.Models.Base;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Web;
 
@@ -10,6 +12,24 @@ namespace Merchant
 {
     public class MerchantController : BaseController
     {
+        // Why: L-16 — the shared Shared.Engine.Http client installs
+        // `ServerCertificateCustomValidationCallback = (..) => true`, i.e. it accepts
+        // ANY TLS certificate. That is acceptable for best-effort scraping, but it is
+        // unacceptable for PSP outbound calls: a MitM on api.b2pay.io /
+        // api.cryptocloud.plus / api.streampay.org could approve a fake "paid" response
+        // and credit a premium subscription. StrictHttpClient uses default platform
+        // certificate validation and is shared across Merchant/* for socket pooling.
+        public static readonly HttpClient StrictHttpClient = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = true,
+            AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate
+            // NOTE: do NOT override ServerCertificateCustomValidationCallback — default validation is what we want.
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(15)
+        };
+
+
         static DateTime LastWriteTimeUsers = default;
 
         // Why: structured dedup replaces raw substring match on a concatenated file blob (M-31).

@@ -21,8 +21,17 @@ namespace SISI.Controllers.NextHUB
             if (!AppInit.conf.sisi.NextHUB)
                 return OnError("disabled", rcache: false);
 
-            string plugin = uri.Split("_-:-_")[0];
-            string url = uri.Split("_-:-_")[1];
+            // Why: M-25 — uri is user-controlled; null or a missing separator previously threw
+            // IndexOutOfRangeException and produced a 500 + stack trace. Guard defensively.
+            if (uri == null)
+                return OnError("uri", rcache: false);
+
+            var parts = uri.Split("_-:-_");
+            if (parts.Length != 2)
+                return OnError("uri", rcache: false);
+
+            string plugin = parts[0];
+            string url = parts[1];
 
             var _nxtInit = Root.goInit(plugin);
             if (_nxtInit == null)
@@ -34,7 +43,10 @@ namespace SISI.Controllers.NextHUB
             if (init.view.initUrlEval != null)
                 url = CSharpEval.Execute<string>(init.view.initUrlEval, new NxtUrlRequest(init.corsHost(), plugin, url, HttpContext.Request.Query, related));
 
-            return await SemaphoreResult($"nexthub:InvkSemaphore:{url}", async e =>
+            // Why: M-24 — cap url (user-derived) in the semaphore key; fingerprint if oversized so cache
+            // memory stays bounded.
+            string urlKey = !string.IsNullOrEmpty(url) && url.Length > 256 ? CrypTo.md5(url) : url;
+            return await SemaphoreResult($"nexthub:InvkSemaphore:{urlKey}", async e =>
             {
                 (string file, List<HeadersModel> headers, List<PlaylistItem> recomends) video = default;
 
@@ -43,9 +55,7 @@ namespace SISI.Controllers.NextHUB
                      init.view.routeEval == null && init.cookies == null && init.view.evalJS == null)
                 {
                     reset:
-                    if (rch == null || rch.enable == false)
-                        await e.semaphore.WaitAsync();
-
+                    // Why (L-5 follow-up): SemaphoreResult now holds the lock for us.
                     video = await goVideoToHttp(plugin, init.cors(url), init);
                     if (string.IsNullOrEmpty(video.file))
                     {
@@ -60,7 +70,7 @@ namespace SISI.Controllers.NextHUB
                     if (rch?.enable == true)
                         return OnError("rch not supported", rcache: false);
 
-                    await e.semaphore.WaitAsync();
+                    // Why (L-5 follow-up): SemaphoreResult now holds the lock for us.
                     video = await goVideoToBrowser(plugin, init.cors(url), init);
                     if (string.IsNullOrEmpty(video.file))
                         return OnError("file", rcache: !init.debug);

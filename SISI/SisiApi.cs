@@ -130,6 +130,18 @@ namespace SISI
         async public ValueTask<JsonResult> Index(string rchtype, string account_email, string uid, string token, bool spder)
         {
             var conf = AppInit.conf;
+
+            // Why (M-23): server-side adult gate for the /sisi channel manifest.
+            // Paired with the same gate in BaseSisiController.IsRequestBlocked so a
+            // client bootstrapped via /on/h/{token} (no-adult) can't enumerate SISI
+            // channels/bookmarks/history just by hitting this endpoint directly.
+            // Default-off (sisi.require_adult_flag=false) keeps legit clients working.
+            if (conf.sisi?.require_adult_flag == true && !BaseSisiController.IsAdultRequestAllowed(HttpContext))
+            {
+                HttpContext.Response.StatusCode = 403;
+                return Json(new { error = "adult content not allowed" });
+            }
+
             JObject kitconf = await loadKitConf();
 
             bool lgbt = conf.sisi.lgbt;
@@ -356,7 +368,58 @@ namespace SISI
                         string title = pl.Value<string>("title").Replace("pornhubpremium.com", "phubprem.com");
                         string playlist_url = pl.Value<string>("playlist_url");
 
+                        if (string.IsNullOrEmpty(playlist_url))
+                            continue;
+
                         if (playlist_url.Contains("/bookmarks"))
+                            continue;
+
+                        // Why (L-13): vi.sisi.am is a third-party index; without validation
+                        // its playlist_url values are reflected verbatim to clients and would
+                        // happily accept javascript:/data:/file:/private-ip entries, or any
+                        // attacker-controlled host. Require http(s), reject private/loopback
+                        // IP literals, and pin the host to a small suffix allow-list that
+                        // matches the upstream sites SISI already supports.
+                        if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(playlist_url))
+                            continue;
+
+                        if (!Uri.TryCreate(playlist_url, UriKind.Absolute, out Uri plUri))
+                            continue;
+
+                        string plHost = plUri.Host.ToLowerInvariant();
+
+                        // Why (L-13): suffix allow-list mirrors the canonical SISI sources
+                        // (plus vi.sisi.am itself, which is the upstream). Anything else is
+                        // dropped silently — better a missing entry than an injected one.
+                        string[] allowedSuffixes = {
+                            "sisi.am",
+                            "pornhub.com",
+                            "phubprem.com",
+                            "xvideos.com",
+                            "xhamster.com",
+                            "xnxx.com",
+                            "eporner.com",
+                            "hqporner.com",
+                            "spankbang.com",
+                            "porntrex.com",
+                            "ebalovo.porn",
+                            "tizam.pw",
+                            "bongacams.com",
+                            "runetki.com",
+                            "chaturbate.com"
+                        };
+
+                        bool hostOk = false;
+                        foreach (var suf in allowedSuffixes)
+                        {
+                            if (plHost == suf || plHost.EndsWith("." + suf))
+                            {
+                                hostOk = true;
+                                break;
+                            }
+                        }
+
+                        if (!hostOk)
                             continue;
 
                         if (channels.FirstOrDefault(i => i.title == title).title != null)

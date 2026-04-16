@@ -55,7 +55,26 @@ namespace Merchant.Controllers
             if (memoryCache.TryGetValue($"cryptocloud:{email}", out string pay_url))
                 return Redirect(pay_url);
 
-            var root = await Http.Post<JObject>("https://api.cryptocloud.plus/v1/invoice/create", new System.Net.Http.FormUrlEncodedContent(postParams), headers: HeadersModel.Init("Authorization", $"Token {AppInit.conf.Merchant.CryptoCloud.APIKEY}"));
+            // Why: L-16 — PSP outbound must go through StrictHttpClient (default TLS validation),
+            // not Shared.Engine.Http (which disables certificate validation globally).
+            JObject root = null;
+            try
+            {
+                using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, "https://api.cryptocloud.plus/v1/invoice/create")
+                {
+                    Content = new System.Net.Http.FormUrlEncodedContent(postParams)
+                };
+                req.Headers.TryAddWithoutValidation("Authorization", $"Token {AppInit.conf.Merchant.CryptoCloud.APIKEY}");
+                using var resp = await StrictHttpClient.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    string body = await resp.Content.ReadAsStringAsync();
+                    if (!string.IsNullOrEmpty(body))
+                        root = JsonConvert.DeserializeObject<JObject>(body);
+                }
+            }
+            catch { }
+
             if (root == null || !root.ContainsKey("pay_url"))
                 return Content("root == null");
 
@@ -111,7 +130,24 @@ namespace Merchant.Controllers
             if (!CrypTo.FixedTimeEquals(jwtInvoiceId, expectedInvoiceId))
                 return StatusCode(403);
 
-            var root = await Http.Get<JObject>("https://api.cryptocloud.plus/v1/invoice/info?uuid=INV-" + invoice_id, headers: HeadersModel.Init("Authorization", $"Token {AppInit.conf.Merchant.CryptoCloud.APIKEY}"));
+            // Why: L-16 — PSP outbound must go through StrictHttpClient so the
+            // api.cryptocloud.plus certificate is actually validated. Using Shared.Engine.Http
+            // here would accept a MitM cert and let an attacker forge a "paid" invoice lookup.
+            JObject root = null;
+            try
+            {
+                using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://api.cryptocloud.plus/v1/invoice/info?uuid=INV-" + invoice_id);
+                req.Headers.TryAddWithoutValidation("Authorization", $"Token {AppInit.conf.Merchant.CryptoCloud.APIKEY}");
+                using var resp = await StrictHttpClient.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    string body = await resp.Content.ReadAsStringAsync();
+                    if (!string.IsNullOrEmpty(body))
+                        root = JsonConvert.DeserializeObject<JObject>(body);
+                }
+            }
+            catch { }
+
             if (root == null || root.Value<string>("status") != "success")
                 return StatusCode(403);
 

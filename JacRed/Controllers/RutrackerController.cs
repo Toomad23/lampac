@@ -23,6 +23,11 @@ namespace JacRed.Controllers
             if (!jackett.Rutracker.enable)
                 return Content("disable");
 
+            // Why: `id` is user-controlled and gets interpolated into forum URLs. Non-numeric values
+            // pivot to other rutracker paths (URL injection). Require an int and use the parsed value.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             string cookie = await getCookie();
             if (string.IsNullOrEmpty(cookie))
                 return Content("cookie == null");
@@ -32,14 +37,14 @@ namespace JacRed.Controllers
             #region Download
             if (jackett.Rutracker.priority == "torrent")
             {
-                var _t = await Http.Download($"{jackett.Rutracker.host}/forum/dl.php?t={id}", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Rutracker.host);
+                var _t = await Http.Download($"{jackett.Rutracker.host}/forum/dl.php?t={tid}", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Rutracker.host);
                 if (_t != null && BencodeTo.Magnet(_t) != null)
                     return File(_t, "application/x-bittorrent");
             }
             #endregion
 
             #region Magnet
-            var fullNews = await Http.Get($"{jackett.Rutracker.host}/forum/viewtopic.php?t=" + id, proxy: proxyManager.Get(), cookie: cookie);
+            var fullNews = await Http.Get($"{jackett.Rutracker.host}/forum/viewtopic.php?t=" + tid, proxy: proxyManager.Get(), cookie: cookie);
             if (fullNews != null)
             {
                 string magnet = Regex.Match(fullNews, "href=\"(magnet:[^\"]+)\" class=\"(med )?med magnet-link\"").Groups[1].Value;

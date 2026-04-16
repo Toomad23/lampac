@@ -11,6 +11,43 @@ namespace DLNA
 {
     public class ModInit
     {
+        // Why: M-20 — ffmpeg commands are built by string-substituting {file}/{thumb}/{preview}
+        // into a single Arguments string. The .NET CreateProcess path then re-parses that
+        // string into argv by spaces and quotes, so a filename like "-filter_complex;drawtext=..."
+        // or "; rm -rf" would be promoted to extra ffmpeg flags. We don't want to rewrite
+        // FFmpeg.RunAsync (out of scope), so we refuse to feed ffmpeg any path whose basename
+        // starts with '-' or whose full path contains characters we can't safely embed in
+        // the space/quote-delimited Arguments string.
+        static bool IsFfmpegPathSafe(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            // Reject argv-metacharacters and shell-metacharacters — the Arguments string is
+            // parsed by CommandLineToArgvW (Windows) / a space-split (Linux) before exec,
+            // and the output is also embedded into coverComand templates that users may have
+            // wrapped with `sh -c` in their config. Backslash is intentionally NOT rejected:
+            // Windows paths use it as the native separator.
+            if (path.IndexOfAny(new[] { '"', '\'', '\n', '\r', '\t', '`', '$', '|', ';', '&', '>', '<' }) >= 0)
+                return false;
+
+            string basename = Path.GetFileName(path);
+            if (string.IsNullOrEmpty(basename))
+                return false;
+
+            // A leading '-' in any path segment turns the filename into a flag.
+            if (basename.StartsWith("-"))
+                return false;
+
+            foreach (string segment in path.Replace('\\', '/').Split('/'))
+            {
+                if (segment.StartsWith("-"))
+                    return false;
+            }
+
+            return true;
+        }
+
         public static void loaded()
         {
             DLNAController.Initialization();
@@ -78,6 +115,14 @@ namespace DLNA
 
                             try
                             {
+                                // Why: M-20 — refuse to feed ffmpeg any path that would
+                                // inject extra argv when the Arguments string is re-parsed.
+                                if (!IsFfmpegPathSafe(file) || !IsFfmpegPathSafe(thumb))
+                                {
+                                    log("skip unsafe path: " + file);
+                                    continue;
+                                }
+
                                 string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
                                 log("\ncoverComand: " + coverComand);
                                 var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
@@ -88,13 +133,20 @@ namespace DLNA
                                 if (cover.preview)
                                 {
                                     string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(name)}.mp4");
-                                    string previewComand = cover.previewComand.Replace("{file}", file).Replace("{preview}", preview);
+                                    if (!IsFfmpegPathSafe(preview))
+                                    {
+                                        log("skip unsafe preview: " + preview);
+                                    }
+                                    else
+                                    {
+                                        string previewComand = cover.previewComand.Replace("{file}", file).Replace("{preview}", preview);
 
-                                    log("\npreviewComand: " + previewComand);
-                                    ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+                                        log("\npreviewComand: " + previewComand);
+                                        ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
 
-                                    log(ffmpegLog.outputData);
-                                    log(ffmpegLog.errorData);
+                                        log(ffmpegLog.outputData);
+                                        log(ffmpegLog.errorData);
+                                    }
                                 }
                             }
                             finally
@@ -144,23 +196,40 @@ namespace DLNA
                             {
                                 #region постер с превью на папку
                                 {
-                                    string coverComand = cover.coverComand.Replace("{file}", files[0]).Replace("{thumb}", folder_thumb);
-                                    log("\ncoverComand: " + coverComand);
-                                    var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
-
-                                    log(ffmpegLog.outputData);
-                                    log(ffmpegLog.errorData);
-
-                                    if (cover.preview)
+                                    // Why: M-20 — see IsFfmpegPathSafe. Any untrusted path
+                                    // element starting with '-' or containing argv/shell metacharacters
+                                    // would be reparsed into extra ffmpeg flags.
+                                    if (!IsFfmpegPathSafe(files[0]) || !IsFfmpegPathSafe(folder_thumb))
                                     {
-                                        string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(folder_name)}.mp4");
-                                        string previewComand = cover.previewComand.Replace("{file}", files[0]).Replace("{preview}", preview);
-
-                                        log("\npreviewComand: " + previewComand);
-                                        ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+                                        log("skip unsafe folder path: " + files[0]);
+                                    }
+                                    else
+                                    {
+                                        string coverComand = cover.coverComand.Replace("{file}", files[0]).Replace("{thumb}", folder_thumb);
+                                        log("\ncoverComand: " + coverComand);
+                                        var ffmpegLog = await FFmpeg.RunAsync(coverComand, priorityClass: cover.priorityClass);
 
                                         log(ffmpegLog.outputData);
                                         log(ffmpegLog.errorData);
+
+                                        if (cover.preview)
+                                        {
+                                            string preview = Path.Combine(init.path, "temp", $"{CrypTo.md5(folder_name)}.mp4");
+                                            if (!IsFfmpegPathSafe(preview))
+                                            {
+                                                log("skip unsafe preview: " + preview);
+                                            }
+                                            else
+                                            {
+                                                string previewComand = cover.previewComand.Replace("{file}", files[0]).Replace("{preview}", preview);
+
+                                                log("\npreviewComand: " + previewComand);
+                                                ffmpegLog = await FFmpeg.RunAsync(previewComand, priorityClass: cover.priorityClass);
+
+                                                log(ffmpegLog.outputData);
+                                                log(ffmpegLog.errorData);
+                                            }
+                                        }
                                     }
                                 }
                                 #endregion
@@ -170,6 +239,13 @@ namespace DLNA
                                 {
                                     string name = $"{Path.GetFileName(folder)}/{Path.GetFileName(file)}";
                                     string thumb = Path.Combine(init.path, "thumbs", $"{CrypTo.md5(name)}.jpg");
+
+                                    // Why: M-20 — see IsFfmpegPathSafe.
+                                    if (!IsFfmpegPathSafe(file) || !IsFfmpegPathSafe(thumb))
+                                    {
+                                        log("skip unsafe path: " + file);
+                                        continue;
+                                    }
 
                                     string coverComand = cover.coverComand.Replace("{file}", file).Replace("{thumb}", thumb);
                                     log("\ncoverComand: " + coverComand);

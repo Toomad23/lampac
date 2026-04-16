@@ -143,13 +143,35 @@ namespace TorrServer.Controllers
 
                 if (HttpContext.Request.Headers.TryGetValue("Authorization", out var Authorization))
                 {
-                    byte[] data = Convert.FromBase64String(Authorization.ToString().Replace("Basic ", ""));
-                    string[] decodedString = Encoding.UTF8.GetString(data).Split(":");
+                    // Why: L-10 — malformed Authorization headers used to throw FormatException /
+                    // IndexOutOfRangeException out of FromBase64String / decodedString[1] and
+                    // bubble up as a 500. Wrap the parse, and reject cleanly with 401 on any
+                    // decoding / splitting error so an attacker cannot probe the server with
+                    // junk headers.
+                    string login = null, passwd = null;
+                    try
+                    {
+                        string authHeader = Authorization.ToString();
+                        if (authHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+                        {
+                            byte[] data = Convert.FromBase64String(authHeader.Substring("Basic ".Length).Trim());
+                            string[] decodedString = Encoding.UTF8.GetString(data).Split(':', 2);
 
-                    string login = decodedString[0].ToLowerAndTrim();
-                    string passwd = decodedString[1];
+                            if (decodedString.Length == 2)
+                            {
+                                login = decodedString[0].ToLowerAndTrim();
+                                passwd = decodedString[1];
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        login = null;
+                        passwd = null;
+                    }
 
-                    if (AppInit.conf.accsdb.findUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && passwd == ModInit.conf.defaultPasswd)
+                    if (login != null && passwd != null &&
+                        AppInit.conf.accsdb.findUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && passwd == ModInit.conf.defaultPasswd)
                     {
                         if (ModInit.conf.group > user.group)
                         {
@@ -255,8 +277,27 @@ namespace TorrServer.Controllers
 
                                         if (doc != null)
                                         {
+                                            // Why: M-17 — do not let user B hijack user A's torrent by
+                                            // re-adding an existing hash. Owner is identified by uid
+                                            // when available, otherwise by source IP. If neither matches
+                                            // the stored record, reject the add-as-owner attempt with 403
+                                            // (the torrent itself was already added on the TS side, but
+                                            // we refuse to rewrite ownership metadata).
+                                            bool ownerMatches =
+                                                (!string.IsNullOrEmpty(uid) && !string.IsNullOrEmpty(doc.uid) && doc.uid == uid) ||
+                                                (string.IsNullOrEmpty(doc.uid) && doc.ip == requestInfo.IP);
+
+                                            if (!ownerMatches)
+                                            {
+                                                HttpContext.Response.StatusCode = 403;
+                                                await HttpContext.Response.WriteAsync(string.Empty, HttpContext.RequestAborted).ConfigureAwait(false);
+                                                return;
+                                            }
+
+                                            // Same owner re-adding — refresh the last-seen IP but keep uid stable.
                                             doc.ip = requestInfo.IP;
-                                            doc.uid = uid;
+                                            if (string.IsNullOrEmpty(doc.uid))
+                                                doc.uid = uid;
                                             ModInit.whosehash.Update(doc);
                                         }
                                         else

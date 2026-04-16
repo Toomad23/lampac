@@ -9,7 +9,10 @@ namespace Online.Controllers
         public VkMovie() : base(AppInit.conf.VkMovie) { }
 
         static readonly int client_id = 52461373;
-        static string access_token;
+        // Why: M-14 — volatile so updates from EnsureAnonymToken (done under semaphore) are immediately
+        // observable on other threads and plain readers snapshot a single coherent value rather than
+        // a torn reference.
+        static volatile string access_token;
         static DateTime token_expires;
 
         [HttpGet]
@@ -30,8 +33,11 @@ namespace Online.Controllers
             rhubFallback:
             var cache = await InvokeCacheResult<CatalogVideo[]>(ipkey($"vkmovie:view:{searchTitle}:{year}"), 20, async e =>
             {
+                // Why: M-14 — snapshot the volatile token once per request so the POST body cannot observe
+                // a half-updated reference if EnsureAnonymToken refreshes the value concurrently.
+                string tokenSnapshot = access_token;
                 string url = $"{init.corsHost()}/method/catalog.getVideoSearchWeb2?v=5.264&client_id={client_id}";
-                string data = $"screen_ref=search_video_service&input_method=keyboard_search_button&q={HttpUtility.UrlEncode($"{title} {year}")}&access_token={access_token}";
+                string data = $"screen_ref=search_video_service&input_method=keyboard_search_button&q={HttpUtility.UrlEncode($"{title} {year}")}&access_token={tokenSnapshot}";
 
                 var root = await httpHydra.Post<JObject>(url, data);
 

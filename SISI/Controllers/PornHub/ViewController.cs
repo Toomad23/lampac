@@ -14,7 +14,9 @@ namespace SISI.Controllers.PornHub
                 return badInitMsg;
 
             rhubFallback:
-            var cache = await InvokeCacheResult<StreamItem>($"phub:vidosik:{vkey}", 20, async e =>
+            // Why: M-24 — fingerprint oversized vkeys so unbounded user input cannot bloat the cache key.
+            string vkeyKey = !string.IsNullOrEmpty(vkey) && vkey.Length > 256 ? CrypTo.md5(vkey) : vkey;
+            var cache = await InvokeCacheResult<StreamItem>($"phub:vidosik:{vkeyKey}", 20, async e =>
             {
                 string url = PornHubTo.StreamLinksUri(init.corsHost(), vkey);
                 if (url == null)

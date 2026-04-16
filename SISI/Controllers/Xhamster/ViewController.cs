@@ -14,7 +14,10 @@ namespace SISI.Controllers.Xhamster
                 return badInitMsg;
 
             rhubFallback:
-            var cache = await InvokeCacheResult<StreamItem>($"xhamster:view:{uri}", 20, async e =>
+            // Why: M-24 — cap unbounded user input in the cache key; fingerprint long uris via md5 so
+            // an attacker cannot spray the in-memory cache with megabyte-sized keys.
+            string uriKey = !string.IsNullOrEmpty(uri) && uri.Length > 256 ? CrypTo.md5(uri) : uri;
+            var cache = await InvokeCacheResult<StreamItem>($"xhamster:view:{uriKey}", 20, async e =>
             {
                 string targetHost = init.corsHost();
                 string url = XhamsterTo.StreamLinksUri(targetHost, uri);

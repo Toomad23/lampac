@@ -15,7 +15,10 @@ namespace SISI.Controllers.Spankbang
                 return badInitMsg;
 
             rhubFallback:
-            var cache = await InvokeCacheResult<List<PlaylistItem>>($"sbg:{search}:{sort}:{pg}", 10, async e =>
+            // Why: M-24 — search is user-controlled and unbounded; fingerprint when oversized so the
+            // in-memory cache key stays compact.
+            string searchKey = !string.IsNullOrEmpty(search) && search.Length > 256 ? CrypTo.md5(search) : search;
+            var cache = await InvokeCacheResult<List<PlaylistItem>>($"sbg:{searchKey}:{sort}:{pg}", 10, async e =>
             {
                 string url = SpankbangTo.Uri(init.corsHost(), search, sort, pg);
 

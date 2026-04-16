@@ -14,6 +14,7 @@ using Shared.Models.Online.Settings;
 using Shared.Models.ServerProxy;
 using Shared.Models.SISI.Base;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text.RegularExpressions;
 using System.Threading;
 using YamlDotNet.Serialization;
@@ -346,17 +347,41 @@ namespace Shared
                     if (!mod.enable || mod.dll == "Jackett.dll")
                         continue;
 
-                    string path = File.Exists(mod.dll) ? mod.dll : $"{Environment.CurrentDirectory}/module/{mod.dll}";
-                    if (File.Exists(path))
+                    // Why (FH-1): mod.dll comes from a user-editable manifest. Reject
+                    // rooted paths / ".." / separators and resolve the final full path
+                    // to stay strictly under module/. Previously Assembly.LoadFile
+                    // accepted any absolute path (/etc/evil.dll) verbatim.
+                    if (!ModulePaths.TryResolveModuleDll(mod.dll, out string path, out string reason))
                     {
-                        try
-                        {
-                            mod.assembly = Assembly.LoadFile(path);
-                            mod.index = mod.index != 0 ? mod.index : (100 + modules.Count);
-                            modules.Add(mod);
-                        }
-                        catch (Exception ex) { Console.WriteLine($"LoadModules {path}: {ex.Message}"); }
+                        Console.WriteLine($"LoadModules: rejected mod.dll '{mod.dll}' ({reason})");
+                        continue;
                     }
+
+                    if (!File.Exists(path))
+                        continue;
+
+                    // Why (FH-4): optional sha256 integrity pin. Missing hash logs a
+                    // warning and continues (non-breaking for existing manifests).
+                    if (!ModulePaths.VerifyDllIntegrity(path, mod.sha256, mod.dll))
+                        continue;
+
+                    try
+                    {
+                        // Why (FH-3): the top-level module/manifest.json lists
+                        // mostly first-party shipped DLLs (DLNA.dll, SISI.dll,
+                        // Tracks.dll, TorrServer.dll) that plug into the shared
+                        // EF Core DbContext types and ASP.NET DI. Unloading them
+                        // at runtime would dangle cross-assembly service
+                        // registrations, so they stay in AssemblyLoadContext.Default
+                        // per spec ("Keep default context for first-party shipped
+                        // DLLs"). Dynamic .cs-compiled modules pick up collectible
+                        // ALCs in Lampac/Startup.cs CompilationMod.
+                        mod.loadHandle = ModuleLoadHandle.ForDefault();
+                        mod.assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
+                        mod.index = mod.index != 0 ? mod.index : (100 + modules.Count);
+                        modules.Add(mod);
+                    }
+                    catch (Exception ex) { Console.WriteLine($"LoadModules {path}: {ex.Message}"); }
                 }
             }
         }

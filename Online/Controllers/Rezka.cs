@@ -235,16 +235,21 @@ namespace Online.Controllers
             /// ajax = false (movie | get_cdn_series)
             /// ajax = null (movie)
 
+            // Why: fingerprint init.cookie (H-14) — raw cookie in a hybrid-cache key is persisted to disk.
+            string cookieFingerprint = string.IsNullOrEmpty(init.cookie) ? "" : CrypTo.md5(init.cookie).Substring(0, 6);
+
             if (init.ajax != null && init.ajax.Value == false && !string.IsNullOrEmpty(voice))
             {
-                md = await InvokeCache(ipkey($"rezka:movie:{voice}:{realip}:{init.cookie}"), 20, 
+                // Why: H-14 — partition cache by cookie fingerprint instead of raw secret.
+                md = await InvokeCache(ipkey($"rezka:movie:{voice}:{realip}:{cookieFingerprint}"), 20,
                     () => oninvk.Movie(voice)
                 );
             }
 
             if (md == null && init.ajax != null)
             {
-                md = await InvokeCache(ipkey($"rezka:view:get_cdn_series:{id}:{t}:{director}:{s}:{e}:{realip}:{init.cookie}"), 20,
+                // Why: H-14 — partition cache by cookie fingerprint instead of raw secret.
+                md = await InvokeCache(ipkey($"rezka:view:get_cdn_series:{id}:{t}:{director}:{s}:{e}:{realip}:{cookieFingerprint}"), 20,
                     () => oninvk.Movie(id, t, director, s, e, favs)
                 );
             }

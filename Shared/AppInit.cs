@@ -293,13 +293,22 @@ namespace Shared
         public static string Host(HttpContext httpContext)
         {
             string scheme = string.IsNullOrEmpty(conf.listen.scheme) ? httpContext.Request.Scheme : conf.listen.scheme;
-            if (httpContext.Request.Headers.TryGetValue("xscheme", out var xscheme) && !string.IsNullOrEmpty(xscheme))
+
+            // xscheme / xhost are Lampac-internal headers: OnlineApi sets them on
+            // loopback-only "localrequest" calls (see OnlineApi.cs). Honouring them
+            // from external clients lets anyone inject an arbitrary Host into the
+            // {host}/proxy/... URLs we embed in responses, which then get cached
+            // and served to other users. Gate on a loopback peer.
+            string remoteIp = httpContext.Connection.RemoteIpAddress?.ToString();
+            bool trustedPeer = Shared.Engine.Utilities.IPNetwork.IsLocalIp(remoteIp);
+
+            if (trustedPeer && httpContext.Request.Headers.TryGetValue("xscheme", out var xscheme) && !string.IsNullOrEmpty(xscheme))
                 scheme = xscheme;
 
             if (!string.IsNullOrEmpty(conf.listen.host))
                 return $"{scheme}://{conf.listen.host}";
 
-            if (httpContext.Request.Headers.TryGetValue("xhost", out var xhost))
+            if (trustedPeer && httpContext.Request.Headers.TryGetValue("xhost", out var xhost))
                 return $"{scheme}://{Regex.Replace(xhost, "^https?://", "")}";
 
             return $"{scheme}://{httpContext.Request.Host.Value}";

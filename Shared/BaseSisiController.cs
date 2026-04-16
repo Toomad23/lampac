@@ -510,13 +510,20 @@ namespace Shared
         #endregion
 
         #region Semaphore
-        public Task<ActionResult> SemaphoreResult(string key, Func<(string key, SemaphorManager semaphore), Task<ActionResult>> func) 
+        // Why (L-5): previously this method constructed a SemaphorManager, synchronously returned
+        // the caller's Task, and released in `finally` — so (a) Release fired before the task body
+        // actually executed, and (b) WaitAsync was never called, so the lock was never held and
+        // the serialisation contract was silently broken. Make the body async, acquire the lock
+        // via WaitAsync, and release in `finally` AFTER awaiting `func`. The ctor already marks
+        // the refcount via AcquireEntry; the WaitAsync here actually enforces mutual exclusion.
+        public async Task<ActionResult> SemaphoreResult(string key, Func<(string key, SemaphorManager semaphore), Task<ActionResult>> func)
         {
             var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(30));
 
             try
             {
-                return func.Invoke((key, semaphore));
+                await semaphore.WaitAsync();
+                return await func.Invoke((key, semaphore));
             }
             finally
             {

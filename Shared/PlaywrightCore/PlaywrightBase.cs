@@ -195,7 +195,11 @@ namespace Shared.PlaywrightCore
 
             if (await Http.DownloadFile(uri, outfile))
             {
-                File.Create($"{outfile}.ok");
+                // Why (L-6): File.Create returns a FileStream that must be disposed, otherwise
+                // the handle leaks until GC finalisation (and on Windows prevents follow-up
+                // deletes of the .ok file). We only need a zero-byte marker, so dispose
+                // immediately via `using`.
+                using (File.Create($"{outfile}.ok")) { }
 
                 if (outfile.EndsWith(".zip"))
                 {

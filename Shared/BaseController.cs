@@ -391,8 +391,12 @@ namespace Shared
             {
                 string url_reserve = ProxyLink.Encrypt(uri, requestInfo.IP, httpHeaders(conf.host ?? conf.apihost, headers), conf != null && conf.useproxystream ? proxy : null, conf?.plugin);
 
+                // Why (M-8): previously AccsDbInvk.Args was applied to the raw `uri`, silently
+                // overwriting the encrypted token produced just above and sending the clear URL
+                // through the reserve channel. Apply it to `url_reserve` so the encrypted value
+                // survives the accsdb wrapper.
                 if (AppInit.conf.accsdb.enable && !AppInit.conf.serverproxy.encrypt)
-                    url_reserve = AccsDbInvk.Args(uri, HttpContext);
+                    url_reserve = AccsDbInvk.Args(url_reserve, HttpContext);
 
                 uri += $" or {host}/proxy/{url_reserve}";
             }

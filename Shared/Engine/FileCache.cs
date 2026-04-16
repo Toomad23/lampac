@@ -1,6 +1,4 @@
-﻿using System.Text.RegularExpressions;
-
-namespace Shared.Engine
+﻿namespace Shared.Engine
 {
     public static class FileCache
     {
@@ -28,7 +26,13 @@ namespace Shared.Engine
                     }
 
                     string extension = Path.GetExtension(path);
-                    string mypath = Regex.Replace(path, $"{extension}$", $".my{extension}");
+                    // Why (M-11): previously Regex.Replace was used with `extension` interpolated
+                    // unescaped, so a path like "cfg.conf" produced the pattern `.conf$` where `.`
+                    // matches any char — replacing e.g. "Xconf" at the end. Use a plain string
+                    // splice that only rewrites the real trailing extension.
+                    string mypath = string.IsNullOrEmpty(extension)
+                        ? path + ".my"
+                        : path.Substring(0, path.Length - extension.Length) + ".my" + extension;
 
                     if (!File.Exists(mypath))
                     {

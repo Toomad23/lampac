@@ -38,6 +38,47 @@ namespace Shared.Engine
             return Convert.ToHexString(bytes, 0, 16).ToLower();
         }
 
+        // Why (M-9): extract the extension from the URI's local path only so that query/fragment
+        // values cannot spoof the served file type (e.g. `/evil.exe?ext=.png`). Returns
+        // string.Empty when the URI is malformed or has no recognisable extension, in which
+        // case callers fall back to their default-suffix behaviour.
+        static string GetUriPathExtension(string uri)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return string.Empty;
+
+            try
+            {
+                // Strip any " or " / "#" fragment that upstream code appends to raw uri values.
+                string clean = uri;
+                int orIdx = clean.IndexOf(" or ", StringComparison.Ordinal);
+                if (orIdx > 0)
+                    clean = clean.Substring(0, orIdx);
+                int hashIdx = clean.IndexOf('#');
+                if (hashIdx > 0)
+                    clean = clean.Substring(0, hashIdx);
+
+                string pathOnly;
+                if (Uri.TryCreate(clean, UriKind.Absolute, out var parsed))
+                {
+                    pathOnly = parsed.LocalPath;
+                }
+                else
+                {
+                    // Relative/opaque fallback: manually trim query.
+                    int q = clean.IndexOf('?');
+                    pathOnly = q >= 0 ? clean.Substring(0, q) : clean;
+                }
+
+                string ext = System.IO.Path.GetExtension(pathOnly);
+                return string.IsNullOrEmpty(ext) ? string.Empty : ext.ToLowerInvariant();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         static readonly Timer _cronTimer = new Timer(Cron, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
         public static int Stat_ContLinks => links.IsEmpty ? 0 : links.Count;
@@ -86,46 +127,53 @@ namespace Shared.Engine
                 hash = HmacId(uri_clear, verifyip && AppInit.conf.serverproxy.verifyip ? (reqip ?? string.Empty) : string.Empty);
             }
 
+            // Why (M-9): previously the code ran uri.Contains(".png") etc. against the full URI,
+            // including query/fragment. `https://attacker.tld/evil.exe?ext=.png` would be tagged
+            // as `.png`, spoofing the served MIME/extension. Extract the extension from the real
+            // path portion only and check it against a whitelist; fall back to the existing
+            // defaults when the path has no recognised extension.
+            string pathExt = GetUriPathExtension(uri);
+
             if (IsProxyImg)
             {
-                if (uri.Contains(".png"))
+                if (pathExt == ".png")
                     hash += ".png";
-                else if (uri.Contains(".webp"))
+                else if (pathExt == ".webp")
                     hash += ".webp";
                 else
                     hash += ".jpg";
             }
             else
             {
-                if (uri.Contains(".m3u8"))
+                if (pathExt == ".m3u8")
                     hash += ".m3u8";
-                else if (uri.Contains(".m3u"))
+                else if (pathExt == ".m3u")
                     hash += ".m3u";
-                else if (uri.Contains(".mpd"))
+                else if (pathExt == ".mpd")
                     hash += ".mpd";
-                else if (uri.Contains(".webm"))
+                else if (pathExt == ".webm")
                     hash += ".webm";
-                else if (uri.Contains(".ts"))
+                else if (pathExt == ".ts")
                     hash += ".ts";
-                else if (uri.Contains(".m4s"))
+                else if (pathExt == ".m4s")
                     hash += ".m4s";
-                else if (uri.Contains(".mp4"))
+                else if (pathExt == ".mp4")
                     hash += ".mp4";
-                else if (uri.Contains(".mov"))
+                else if (pathExt == ".mov")
                     hash += ".mov";
-                else if (uri.Contains(".mkv"))
+                else if (pathExt == ".mkv")
                     hash += ".mkv";
-                else if (uri.Contains(".aac"))
+                else if (pathExt == ".aac")
                     hash += ".aac";
-                else if (uri.Contains(".vtt"))
+                else if (pathExt == ".vtt")
                     hash += ".vtt";
-                else if (uri.Contains(".srt"))
+                else if (pathExt == ".srt")
                     hash += ".srt";
-                else if (uri.Contains(".jpg") || uri.Contains(".jpeg"))
+                else if (pathExt == ".jpg" || pathExt == ".jpeg")
                     hash += ".jpg";
-                else if (uri.Contains(".png"))
+                else if (pathExt == ".png")
                     hash += ".png";
-                else if (uri.Contains(".webp"))
+                else if (pathExt == ".webp")
                     hash += ".webp";
             }
 

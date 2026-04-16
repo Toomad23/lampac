@@ -729,6 +729,20 @@ namespace DLNA.Controllers
         }
         #endregion
 
+        // DLNA mutating endpoints have no per-request auth of their own — when
+        // Accsdb is disabled (or WAF.allowExternalIpAccess is on) any caller
+        // reaching the listener can delete files, queue torrents, stop/start
+        // downloads, etc. Require loopback in that deployment mode; when
+        // Accsdb is enabled it already gates these paths.
+        bool IsDlnaMutationForbidden()
+        {
+            if (AppInit.conf.accsdb.enable)
+                return false;
+
+            string ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+            return !Shared.Engine.Utilities.IPNetwork.IsLocalIp(ip);
+        }
+
         #region Delete
         [HttpPost]
         [Route("dlna/delete")]
@@ -736,6 +750,9 @@ namespace DLNA.Controllers
         {
             if (!AppInit.conf.dlna.enable)
                 return Content(string.Empty);
+
+            if (IsDlnaMutationForbidden())
+                return Forbid();
 
             if (!TryResolveInsideDlna(path, out string fullPath))
                 return NotFound();
@@ -877,6 +894,9 @@ namespace DLNA.Controllers
         {
             if (!AppInit.conf.dlna.enable)
                 return Json(new { error = "enable" });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             try
             {
@@ -1132,6 +1152,9 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
+
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
             {
@@ -1163,6 +1186,9 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
+
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
                 await manager.PauseAsync();
@@ -1179,6 +1205,9 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
+
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
                 await manager.StartAsync();
@@ -1194,6 +1223,9 @@ namespace DLNA.Controllers
         {
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)

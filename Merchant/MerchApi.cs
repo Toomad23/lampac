@@ -10,8 +10,14 @@ namespace Merchant.Controllers
         [HttpGet]
         [AllowAnonymous]
         [Route("merchant/user")]
-        public ActionResult Index(string account_email)
+        public ActionResult Index(string account_email, string passwd)
         {
+            // Previously [AllowAnonymous] with no passwd check — anyone could
+            // enumerate subscribers by email and read expiry/group/ban fields.
+            // Require the same rootPasswd as /merchant/payconfirm.
+            if (!CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
+                return Content("incorrect passwd");
+
             string email = decodeEmail(account_email);
             if (email == null)
                 return Json(new { error = true, msg = "email null" });

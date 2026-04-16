@@ -55,9 +55,7 @@ namespace SISI.Controllers.NextHUB
                      init.view.routeEval == null && init.cookies == null && init.view.evalJS == null)
                 {
                     reset:
-                    if (rch == null || rch.enable == false)
-                        await e.semaphore.WaitAsync();
-
+                    // Why (L-5 follow-up): SemaphoreResult now holds the lock for us.
                     video = await goVideoToHttp(plugin, init.cors(url), init);
                     if (string.IsNullOrEmpty(video.file))
                     {
@@ -72,7 +70,7 @@ namespace SISI.Controllers.NextHUB
                     if (rch?.enable == true)
                         return OnError("rch not supported", rcache: false);
 
-                    await e.semaphore.WaitAsync();
+                    // Why (L-5 follow-up): SemaphoreResult now holds the lock for us.
                     video = await goVideoToBrowser(plugin, init.cors(url), init);
                     if (string.IsNullOrEmpty(video.file))
                         return OnError("file", rcache: !init.debug);

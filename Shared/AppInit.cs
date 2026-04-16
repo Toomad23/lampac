@@ -171,6 +171,8 @@ namespace Shared
 
             PosterApi.Initialization(conf.omdbapi_key, conf.posterApi, new ProxyLink());
 
+            AccsToken.Init(conf.accsdb.hmac_secret);
+
             #region accounts
             if (conf.accsdb.accounts != null)
             {

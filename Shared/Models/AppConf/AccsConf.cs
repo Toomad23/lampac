@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Http;
+using Shared.Engine;
 using Shared.Models.Base;
 using System.Collections.Concurrent;
 
@@ -19,6 +20,10 @@ namespace Shared.Models.AppConf
         public string premium_pattern { get; set; }
 
         public string domainId_pattern { get; set; }
+
+        public string hmac_secret { get; set; }
+
+        public bool require_hmac_token { get; set; }
 
         public int maxip_hour { get; set; }
 
@@ -45,15 +50,42 @@ namespace Shared.Models.AppConf
 
         public AccsUser findUser(HttpContext httpContext, out string uid)
         {
-            var user = findUser(httpContext.Request.Query["token"].ToString()) ??
-                       findUser(httpContext.Request.Query["account_email"].ToString()) ??
-                       findUser(httpContext.Request.Query["uid"].ToString()) ??
-                       findUser(httpContext.Request.Query["box_mac"].ToString());
-
-            if (user != null)
+            // 1. Try HMAC token first
+            string tokenParam = httpContext.Request.Query["token"].ToString();
+            if (!string.IsNullOrEmpty(tokenParam) && AccsToken.IsHmacToken(tokenParam))
             {
-                uid = user.id;
-                return user;
+                var (extractedUid, valid) = AccsToken.Verify(tokenParam);
+                if (valid)
+                {
+                    var user = findUser(extractedUid);
+                    if (user != null)
+                    {
+                        uid = user.id;
+                        return user;
+                    }
+                }
+
+                uid = null;
+                return null;
+            }
+
+            // 2. If HMAC required, reject bare lookups
+            if (require_hmac_token && AccsToken.IsEnabled)
+            {
+                uid = null;
+                return null;
+            }
+
+            // 3. Original bare lookup chain (backward compatible)
+            var u = findUser(tokenParam) ??
+                    findUser(httpContext.Request.Query["account_email"].ToString()) ??
+                    findUser(httpContext.Request.Query["uid"].ToString()) ??
+                    findUser(httpContext.Request.Query["box_mac"].ToString());
+
+            if (u != null)
+            {
+                uid = u.id;
+                return u;
             }
 
             uid = null;

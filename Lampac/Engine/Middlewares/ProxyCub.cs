@@ -87,7 +87,11 @@ namespace Lampac.Engine.Middlewares
 
                 if (!init.enable || domain == "ws")
                 {
-                    httpContext.Response.Redirect($"https://{path}/{query}");
+                    // Previously built a redirect target from Request.Path, turning
+                    // /cub/evil.com into an open redirect to any host (the /cub/
+                    // prefix is AnonymousRequest, so Accsdb/WAF don't gate it).
+                    // When the feature is disabled, return 404 instead.
+                    httpContext.Response.StatusCode = 404;
                     return;
                 }
 

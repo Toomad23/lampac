@@ -18,8 +18,18 @@ namespace Shared.Models.Templates
 
         public void Append(string label, string url)
         {
-            if (!string.IsNullOrEmpty(label) && !string.IsNullOrEmpty(url))
-                data.Add(new SubtitleDto(url, label));
+            if (string.IsNullOrEmpty(label) || string.IsNullOrEmpty(url))
+                return;
+
+            // Subtitle URLs come from scraped upstream JSON. Without a scheme
+            // check a poisoned CDN could push "javascript:..." / "data:..." into
+            // the client subtitle list — some front-ends open subtitle "links"
+            // in an iframe/new tab, turning this into persistent XSS.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+                return;
+
+            data.Add(new SubtitleDto(url, label));
         }
 
         public string ToJson() => JsonSerializer.Serialize(ToObject(), SubtitleJsonContext.Default.ListSubtitleDto);

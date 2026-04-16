@@ -304,8 +304,21 @@ namespace JacRed.Engine
                     if (torrent.magnet == null)
                         continue;
 
-                    var magnetLink = MagnetLink.Parse(torrent.magnet);
-                    string hex = magnetLink.InfoHashes.V1.ToHex();
+                    // Why: MagnetLink.Parse throws FormatException on malformed magnets. A single bad
+                    // entry in FileDB would otherwise 500 the entire /api/v2.0/indexers/all/results
+                    // response until the record is purged. Skip the bad entry and keep the response alive.
+                    MagnetLink magnetLink;
+                    string hex;
+                    try
+                    {
+                        magnetLink = MagnetLink.Parse(torrent.magnet);
+                        hex = magnetLink.InfoHashes.V1.ToHex();
+                    }
+                    catch (Exception mex)
+                    {
+                        Console.WriteLine($"JacRed/RedApi: skip malformed magnet ({torrent.trackerName}): {mex.Message}");
+                        continue;
+                    }
 
                     if (!temp.TryGetValue(hex, out _))
                     {

@@ -8,6 +8,12 @@ namespace JacRed.Controllers
 {
     public class ApiController : JacBaseController
     {
+        // Why: defense-in-depth against catastrophic regex backtracking on attacker-controlled `query`
+        // (JacRed search is reachable anonymously when AppInit.conf.apikey is empty). The cap + 50ms
+        // match-timeout bound worst-case CPU per request.
+        const int MaxQueryLength = 300;
+        static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromMilliseconds(50);
+
         #region Conf
         [HttpGet]
         [Route("api/v1.0/conf")]
@@ -33,34 +39,45 @@ namespace JacRed.Controllers
 
             if (rqnum && query != null)
             {
-                var mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+) ([0-9]{4})$");
+                // Why: bound query length before any regex to neutralise backtracking on adversarial input.
+                if (query.Length > MaxQueryLength)
+                    query = query.Substring(0, MaxQueryLength);
 
-                if (mNum.Success)
+                try
                 {
-                    if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}"))
-                    {
-                        var g = mNum.Groups;
-                        title = g[1].Value;
-                        title_original = g[2].Value;
-                        year = int.Parse(g[3].Value);
-                    }
-                }
-                else
-                {
-                    if (Regex.IsMatch(query, "^([^a-z-A-Z]+) ((19|20)[0-9]{2})$"))
-                        return Content(JsonConvertPool.SerializeObject(new { Results = new List<object>(), jacred = ModInit.conf.typesearch == "red" }), "application/json; charset=utf-8");
-
-                    mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+)$");
+                    var mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+) ([0-9]{4})$", RegexOptions.None, RegexMatchTimeout);
 
                     if (mNum.Success)
                     {
-                        if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}"))
+                        if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}", RegexOptions.None, RegexMatchTimeout))
                         {
                             var g = mNum.Groups;
                             title = g[1].Value;
                             title_original = g[2].Value;
+                            year = int.Parse(g[3].Value);
                         }
                     }
+                    else
+                    {
+                        if (Regex.IsMatch(query, "^([^a-z-A-Z]+) ((19|20)[0-9]{2})$", RegexOptions.None, RegexMatchTimeout))
+                            return Content(JsonConvertPool.SerializeObject(new { Results = new List<object>(), jacred = ModInit.conf.typesearch == "red" }), "application/json; charset=utf-8");
+
+                        mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+)$", RegexOptions.None, RegexMatchTimeout);
+
+                        if (mNum.Success)
+                        {
+                            if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}", RegexOptions.None, RegexMatchTimeout))
+                            {
+                                var g = mNum.Groups;
+                                title = g[1].Value;
+                                title_original = g[2].Value;
+                            }
+                        }
+                    }
+                }
+                catch (RegexMatchTimeoutException)
+                {
+                    // Why: adversarial query exceeded the 50ms budget; skip rqnum parsing and let the normal flow handle it.
                 }
             }
             #endregion
@@ -176,7 +193,10 @@ namespace JacRed.Controllers
                     if (search.StartsWith("kp"))
                         uri = $"&kp={search.Remove(0, 2)}";
 
-                    var root = await Http.Get<JObject>("https://api.alloha.tv/?token=04941a9a3ca3ac16e2b4327347bbc1" + uri, timeoutSeconds: 10);
+                    // Why: prefer operator-supplied Alloha token from init.conf; fall back to the shared-public token
+                    // so existing deployments keep working. Same pattern as Online/OnlineApi.cs.
+                    string allohaToken = !string.IsNullOrEmpty(AppInit.conf.Alloha?.token) ? AppInit.conf.Alloha.token : "04941a9a3ca3ac16e2b4327347bbc1";
+                    var root = await Http.Get<JObject>($"https://api.alloha.tv/?token={allohaToken}" + uri, timeoutSeconds: 10);
                     cache.original_name = root?.Value<JObject>("data")?.Value<string>("original_name");
                     cache.name = root?.Value<JObject>("data")?.Value<string>("name");
 

@@ -58,7 +58,7 @@ namespace Lampac.Engine.Middlewares
             {
                 if (httpContext.Request.Cookies.TryGetValue("passwd", out string passwd))
                 {
-                    if (passwd == AppInit.rootPasswd)
+                    if (Shared.Engine.CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
                         return _next(httpContext);
 
                     // Wrong password — increment brute force counter and apply backoff

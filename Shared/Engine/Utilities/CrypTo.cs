@@ -269,6 +269,21 @@ namespace Shared.Engine
             }
         }
 
+        #region FixedTimeEquals
+        // Constant-time string comparison for secrets. Returns false on null, on length mismatch,
+        // or on any byte difference — without short-circuiting, so comparison time does not leak
+        // a partial match through timing. Use for passwords, HMAC/MD5 hex signatures, tokens.
+        public static bool FixedTimeEquals(string a, string b)
+        {
+            if (a == null || b == null)
+                return false;
+
+            byte[] ba = Encoding.UTF8.GetBytes(a);
+            byte[] bb = Encoding.UTF8.GetBytes(b);
+            return CryptographicOperations.FixedTimeEquals(ba, bb);
+        }
+        #endregion
+
         #region unic
         static string ArrayList => "qwertyuioplkjhgfdsazxcvbnmQWERTYUIOPLKJHGFDSAZXCVBNM1234567890";
         static string ArrayListToNumber => "1234567890";

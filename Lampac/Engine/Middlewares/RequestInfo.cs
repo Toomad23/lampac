@@ -54,7 +54,7 @@ namespace Lampac.Engine.Middlewares
                 if (!IsLocalIp && !AppInit.conf.BaseModule.allowExternalIpAccessToLocalRequest)
                     return httpContext.Response.WriteAsync("allowExternalIpAccessToLocalRequest false", httpContext.RequestAborted);
 
-                if (_localpasswd[0] != AppInit.rootPasswd)
+                if (!Shared.Engine.CrypTo.FixedTimeEquals(_localpasswd[0], AppInit.rootPasswd))
                     return httpContext.Response.WriteAsync("error passwd", httpContext.RequestAborted);
 
                 IsLocalRequest = true;

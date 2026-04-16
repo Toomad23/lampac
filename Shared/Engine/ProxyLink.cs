@@ -162,7 +162,9 @@ namespace Shared.Engine
 
                 if (root.v)
                 {
-                    if (reqip != null && root.i != reqip)
+                    // verifyip=true must fail-closed when caller cannot provide the request IP:
+                    // if reqip is null we have no evidence of binding, so reject.
+                    if (reqip == null || root.i != reqip)
                         return null;
 
                     if (DateTime.Now > root.e)

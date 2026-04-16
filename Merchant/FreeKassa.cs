@@ -44,7 +44,8 @@ namespace Merchant.Controllers
 
             WriteLog("freekassa", JsonConvert.SerializeObject(HttpContext.Request.Form));
 
-            if (CrypTo.md5($"{AppInit.conf.Merchant.FreeKassa.shop_id}:{AMOUNT}:{AppInit.conf.Merchant.FreeKassa.secret}:{MERCHANT_ORDER_ID}") == SIGN)
+            string expectedSign = CrypTo.md5($"{AppInit.conf.Merchant.FreeKassa.shop_id}:{AMOUNT}:{AppInit.conf.Merchant.FreeKassa.secret}:{MERCHANT_ORDER_ID}");
+            if (CrypTo.FixedTimeEquals(expectedSign, SIGN))
             {
                 string email = IO.ReadAllText($"merchant/invoice/freekassa/{MERCHANT_ORDER_ID}");
                 PayConfirm(email, "freekassa", MERCHANT_ORDER_ID.ToString());

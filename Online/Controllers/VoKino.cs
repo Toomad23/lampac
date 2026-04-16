@@ -33,14 +33,18 @@ namespace Online.Controllers
             else
             {
                 string deviceid = new string(DateTime.Now.ToBinary().ToString().Reverse().ToArray()).Substring(0, 8);
-                string uri = $"{init.corsHost()}/v2/auth?email={HttpUtility.UrlEncode(login)}&passwd={HttpUtility.UrlEncode(pass)}&deviceid={deviceid}";
+                string uri = $"{init.corsHost()}/v2/auth";
+
+                // Why (H-12): send credentials in POST body so password never lands in access logs,
+                // reverse-proxy logs, browser history, or Referer headers.
+                string body = $"email={HttpUtility.UrlEncode(login)}&passwd={HttpUtility.UrlEncode(pass)}&deviceid={deviceid}";
 
                 var head = HeadersModel.Init(
                     ("user-agent", "lampac"),
                     ("X-Lampac-Version", $"{appversion}.{minorversion}")
                 );
 
-                var token_request = await Http.Get<JObject>(uri, proxy: proxy, headers: head);
+                var token_request = await Http.Post<JObject>(uri, body, proxy: proxy, headers: head);
 
                 if (token_request == null)
                     return ContentTo($"нет доступа к {init.corsHost()}");
@@ -91,8 +95,12 @@ namespace Online.Controllers
                requesterror: () => proxyManager?.Refresh()
             );
 
+            // Why (H-14): hybrid cache keys may be persisted to disk; use a short hex fingerprint
+            // instead of the raw token so rotation still partitions entries without leaking the secret.
+            string tokenFingerprint = CrypTo.md5(init.token).Substring(0, 6);
+
             rhubFallback:
-            var cache = await InvokeCacheResult(ipkey($"vokino:{kinopoisk_id}:{origid}:{balancer}:{t}:{init.token}"), 20, 
+            var cache = await InvokeCacheResult(ipkey($"vokino:{kinopoisk_id}:{origid}:{balancer}:{t}:{tokenFingerprint}"), 20,
                 () => oninvk.Embed(origid, kinopoisk_id, balancer, t)
             );
 

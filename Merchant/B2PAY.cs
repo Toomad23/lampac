@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -52,7 +53,27 @@ namespace Merchant.Controllers
 
             string data = $"payment={CrypTo.Base64(CrypTo.AES256(JsonConvert.SerializeObject(payment), AppInit.conf.Merchant.B2PAY.encryption_password, AppInit.conf.Merchant.B2PAY.encryption_iv))}&id={AppInit.conf.Merchant.B2PAY.username_id}";
 
-            var root = await Http.Post<JObject>(AppInit.conf.Merchant.B2PAY.sandbox ? "https://pay.b2pay.io/api_sandbox/merchantpayments.php" : "https://pay.b2pay.io/api/merchantpayments.php", data);
+            // Why: L-16 — use the strict (default-validation) HttpClient instead of Shared.Engine.Http,
+            // whose handler installs a permissive ServerCertificateCustomValidationCallback. For PSP
+            // outbound the TLS identity of api.b2pay.io must be authenticated.
+            JObject root = null;
+            try
+            {
+                string url = AppInit.conf.Merchant.B2PAY.sandbox ? "https://pay.b2pay.io/api_sandbox/merchantpayments.php" : "https://pay.b2pay.io/api/merchantpayments.php";
+                using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(data, Encoding.UTF8, "application/x-www-form-urlencoded")
+                };
+                using var resp = await StrictHttpClient.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    string body = await resp.Content.ReadAsStringAsync();
+                    if (!string.IsNullOrEmpty(body))
+                        root = JsonConvert.DeserializeObject<JObject>(body);
+                }
+            }
+            catch { }
+
             if (root == null || !root.ContainsKey("data"))
                 return Content("data == null");
 

@@ -136,7 +136,11 @@ namespace Lampac.Engine.Middlewares
                         string[] parts = ip.Split('/');
                         if (int.TryParse(parts[1], out int prefixLength))
                         {
-                            if (new System.Net.IPNetwork(IPAddress.Parse(parts[0]), prefixLength).Contains(clientIPAddress))
+                            // Why: L-2 — System.Net.IPNetwork.Contains throws ArgumentException on
+                            // v4/v6 family mismatch, so any mixed CIDR list + dual-stack listener
+                            // turned every request into a 500. Skip on family mismatch and swallow
+                            // parse/ctor errors so one bad entry can't DoS the pipeline.
+                            if (CidrContains(parts[0], prefixLength, clientIPAddress))
                             {
                                 httpContext.Response.StatusCode = 403;
                                 return Task.CompletedTask;
@@ -159,7 +163,8 @@ namespace Lampac.Engine.Middlewares
                             string[] parts = ip.Split('/');
                             if (int.TryParse(parts[1], out int prefixLength))
                             {
-                                if (new System.Net.IPNetwork(IPAddress.Parse(parts[0]), prefixLength).Contains(clientIPAddress))
+                                // Why: L-2 — same family-mismatch guard as ipsDeny above.
+                                if (CidrContains(parts[0], prefixLength, clientIPAddress))
                                 {
                                     deny = false;
                                     break;
@@ -209,6 +214,37 @@ namespace Lampac.Engine.Middlewares
             return _next(httpContext);
         }
 
+
+        #region CidrContains
+        // Why: L-2 — System.Net.IPNetwork.Contains throws ArgumentException when the CIDR entry's
+        // address family differs from the client's (IPv4 entry vs IPv6 client or vice versa).
+        // A single bad entry would bubble up and 500 every request on a dual-stack listener.
+        // Here we enforce family equality first, and additionally catch any parse/ctor failure
+        // (bad IP, out-of-range prefix, etc.) so one malformed line can't DoS the pipeline.
+        static bool _cidrErrorLogged;
+        static bool CidrContains(string cidrHost, int prefixLength, IPAddress clientIPAddress)
+        {
+            try
+            {
+                if (!IPAddress.TryParse(cidrHost, out var cidrAddress))
+                    return false;
+
+                if (cidrAddress.AddressFamily != clientIPAddress.AddressFamily)
+                    return false;
+
+                return new System.Net.IPNetwork(cidrAddress, prefixLength).Contains(clientIPAddress);
+            }
+            catch (Exception ex)
+            {
+                if (!_cidrErrorLogged)
+                {
+                    _cidrErrorLogged = true;
+                    try { Console.WriteLine($"WAF CIDR parse failure for '{cidrHost}/{prefixLength}': {ex.Message}"); } catch { }
+                }
+                return false;
+            }
+        }
+        #endregion
 
         #region MapLimited
         static (string pattern, WafLimitMap map) MapLimited(WafConf waf, string path)

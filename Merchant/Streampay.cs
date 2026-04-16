@@ -63,16 +63,19 @@ namespace Merchant.Controllers
             var jsonBody = JsonSerializer.Serialize(body);
             string signature = Sign(Encoding.UTF8.GetBytes(jsonBody + DateTime.UtcNow.ToString("yyyyMMdd:HHmm")), init.private_key);
 
-            using (var httpClient = new HttpClient())
+            // Why: L-16 — previously this created a fresh `new HttpClient()` per request, which
+            // was TLS-safe (default validation) but leaked sockets under load. Switch to the
+            // static MerchantController.StrictHttpClient so pooling is reused, and explicitly
+            // dispose the request (not the shared client).
             {
-                var request = new HttpRequestMessage(HttpMethod.Post, "https://api.streampay.org/api/payment/create")
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.streampay.org/api/payment/create")
                 {
                     Content = new StringContent(jsonBody, Encoding.UTF8, "application/json")
                 };
 
                 request.Headers.Add("signature", signature);
 
-                var response = await httpClient.SendAsync(request);
+                using var response = await StrictHttpClient.SendAsync(request);
                 if (response.IsSuccessStatusCode)
                 {
                     string respData = await response.Content.ReadAsStringAsync();

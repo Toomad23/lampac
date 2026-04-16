@@ -72,20 +72,13 @@ namespace Lampac.Engine
 
             using (var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false))
             {
-                string connectionId = null;
-
-                if (context.Request.Query.TryGetValue("id", out var _connectionId))
-                {
-                    string _id = _connectionId.ToString();
-                    if (!string.IsNullOrWhiteSpace(_id))
-                    {
-                        connectionId = _id;
-                        Cleanup(connectionId);
-                    }
-                }
-
-                if (connectionId == null)
-                    connectionId = Guid.NewGuid().ToString("N");
+                // Always allocate a fresh connection id. The previous code let any
+                // unauthenticated client pick ?id=<victim_connectionId>, ran
+                // Cleanup() which evicted the real owner, and re-registered the
+                // attacker under that id — silently hijacking RCH callbacks and
+                // targeted event messages. There is no reconnect-token flow
+                // implemented that would make the "reuse existing id" path safe.
+                string connectionId = Guid.NewGuid().ToString("N");
 
                 try
                 {

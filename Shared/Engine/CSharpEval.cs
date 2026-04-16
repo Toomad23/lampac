@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web;
 
 namespace Shared.Engine
@@ -29,6 +30,54 @@ namespace Shared.Engine
         static readonly ConcurrentDictionary<string, object> scripts = new ConcurrentDictionary<string, object>();
         static readonly ConcurrentQueue<string> scriptOrder = new ConcurrentQueue<string>();
         static readonly object scriptsLock = new object();
+
+        // Why (FL-3, FM-4): compiled scripts were invoked synchronously on request/WS threads;
+        // a runaway operator script (tight loop, blocking HTTP) pinned the thread forever. Wrap
+        // every invocation in a CancellationTokenSource with DefaultScriptTimeout (caller may
+        // override). Pure CPU scripts cannot be interrupted cooperatively — we log and rethrow
+        // so InvkEvent's catch-log layer (FL-7) records which handler misbehaved.
+        static readonly TimeSpan DefaultScriptTimeout = TimeSpan.FromSeconds(30);
+
+        static async Task<T> WithTimeoutAsync<T>(Func<Task<T>> invoke, CancellationToken externalCt, string label)
+        {
+            using var cts = externalCt.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(externalCt)
+                : new CancellationTokenSource();
+            cts.CancelAfter(DefaultScriptTimeout);
+            try
+            {
+                return await Task.Run(invoke, cts.Token).WaitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested && !externalCt.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"CSharpEval timeout after {DefaultScriptTimeout.TotalSeconds:F0}s ({label}); compiled script did not complete. Thread may still be running.");
+                throw;
+            }
+        }
+
+        static async Task WithTimeoutAsync(Func<Task> invoke, CancellationToken externalCt, string label)
+        {
+            using var cts = externalCt.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(externalCt)
+                : new CancellationTokenSource();
+            cts.CancelAfter(DefaultScriptTimeout);
+            try
+            {
+                await Task.Run(invoke, cts.Token).WaitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested && !externalCt.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"CSharpEval timeout after {DefaultScriptTimeout.TotalSeconds:F0}s ({label}); compiled script did not complete. Thread may still be running.");
+                throw;
+            }
+        }
+
+        /// <summary>Why (FL-6): invalidate the whole compile cache on config reload so edits take effect without TTL wait.</summary>
+        public static void InvalidateAll()
+        {
+            scripts.Clear();
+            while (scriptOrder.TryDequeue(out _)) { }
+        }
 
         static string CacheKey(string cs, Type globalsType, Type returnType)
         {
@@ -72,12 +121,12 @@ namespace Shared.Engine
 
 
         #region Execute<T>
-        public static T Execute<T>(string cs, object model, ScriptOptions options = null)
+        public static T Execute<T>(string cs, object model, ScriptOptions options = null, CancellationToken cancellationToken = default)
         {
-            return ExecuteAsync<T>(cs, model, options).GetAwaiter().GetResult();
+            return ExecuteAsync<T>(cs, model, options, cancellationToken).GetAwaiter().GetResult();
         }
 
-        public static Task<T> ExecuteAsync<T>(string cs, object model, ScriptOptions options = null)
+        public static Task<T> ExecuteAsync<T>(string cs, object model, ScriptOptions options = null, CancellationToken cancellationToken = default)
         {
             // Why (FH-6): key includes globalsType and T.
             string key = CacheKey(cs, model?.GetType(), typeof(T));
@@ -100,17 +149,18 @@ namespace Shared.Engine
                 ).CreateDelegate();
             });
 
-            return entry(model);
+            // Why (FL-3, FM-4): wrap in timeout so runaway scripts can't pin the thread.
+            return WithTimeoutAsync<T>(() => entry(model), cancellationToken, "ExecuteAsync<T>");
         }
         #endregion
 
         #region BaseExecute<T>
-        public static T BaseExecute<T>(string cs, object model, ScriptOptions options = null, InteractiveAssemblyLoader loader = null)
+        public static T BaseExecute<T>(string cs, object model, ScriptOptions options = null, InteractiveAssemblyLoader loader = null, CancellationToken cancellationToken = default)
         {
-            return BaseExecuteAsync<T>(cs, model, options, loader).GetAwaiter().GetResult();
+            return BaseExecuteAsync<T>(cs, model, options, loader, cancellationToken).GetAwaiter().GetResult();
         }
 
-        public static Task<T> BaseExecuteAsync<T>(string cs, object model, ScriptOptions options = null, InteractiveAssemblyLoader loader = null)
+        public static Task<T> BaseExecuteAsync<T>(string cs, object model, ScriptOptions options = null, InteractiveAssemblyLoader loader = null, CancellationToken cancellationToken = default)
         {
             // Why (FH-6): key includes globalsType + T for BaseExecute too.
             string key = CacheKey(cs, model?.GetType(), typeof(T));
@@ -125,17 +175,17 @@ namespace Shared.Engine
                 ).CreateDelegate();
             });
 
-            return entry(model);
+            return WithTimeoutAsync<T>(() => entry(model), cancellationToken, "BaseExecuteAsync<T>");
         }
         #endregion
 
         #region Execute
-        public static void Execute(string cs, object model, ScriptOptions options = null)
+        public static void Execute(string cs, object model, ScriptOptions options = null, CancellationToken cancellationToken = default)
         {
-            ExecuteAsync(cs, model, options).GetAwaiter().GetResult();
+            ExecuteAsync(cs, model, options, cancellationToken).GetAwaiter().GetResult();
         }
 
-        public static Task ExecuteAsync(string cs, object model, ScriptOptions options = null)
+        public static Task ExecuteAsync(string cs, object model, ScriptOptions options = null, CancellationToken cancellationToken = default)
         {
             // Why (FH-6): void-return overload — use typeof(object) as the "T"
             // component of the cache key since CSharpScript.Create returns a
@@ -160,7 +210,7 @@ namespace Shared.Engine
                 ).CreateDelegate();
             });
 
-            return entry(model);
+            return WithTimeoutAsync(async () => { await entry(model).ConfigureAwait(false); }, cancellationToken, "ExecuteAsync");
         }
         #endregion
 

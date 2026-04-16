@@ -6,6 +6,50 @@ namespace SISI.Controllers.NextHUB
 {
     public static class Root
     {
+        #region SafeReadUnder
+        // Why (FL-8): YAML-supplied relative paths (init.view.eval, init.view.routeEval,
+        // list.eval, view.include: tokens) used to be concatenated straight into File.ReadAllText
+        // under NextHUB/sites/ or NextHUB/utils/. A malicious or sloppy YAML with
+        // `eval: ../../etc/passwd.cs` would read arbitrary files. Every NextHUB path reader now
+        // funnels through this helper, which enforces containment after resolution (following
+        // the Microsoft recommendation: Path.GetFullPath both sides, compare with a trailing
+        // separator so sibling directories like `NextHUB/sites-backup/` don't match).
+        public static string SafeReadUnder(string baseDir, string relative)
+        {
+            if (string.IsNullOrEmpty(relative))
+                return null;
+
+            // Cheap pre-check: reject segment separators and traversal tokens outright.
+            if (relative.IndexOfAny(new[] { '\0' }) >= 0)
+                return null;
+            if (relative.Contains(".."))
+                return null;
+
+            try
+            {
+                string full = Path.GetFullPath(Path.Combine(baseDir, relative));
+                string baseFull = Path.GetFullPath(baseDir);
+
+                if (!full.StartsWith(baseFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                    && !string.Equals(full, baseFull, StringComparison.Ordinal))
+                {
+                    Console.Error.WriteLine($"NextHUB path escape blocked: base='{baseDir}' rel='{relative}'");
+                    return null;
+                }
+
+                if (!File.Exists(full))
+                    return null;
+
+                return FileCache.ReadAllText(full);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"NextHUB SafeReadUnder: {ex.GetType().Name}");
+                return null;
+            }
+        }
+        #endregion
+
         #region evalOptionsFull
         public static ScriptOptions evalOptionsFull = ScriptOptions.Default
 
@@ -98,10 +142,16 @@ namespace SISI.Controllers.NextHUB
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"NxtSettings goInit: {ex.Message}");
+                    // Why (FL-9): previously we cached the *empty* NxtSettings for 60 seconds
+                    // on any error. That turned transient parse failures (half-written YAML,
+                    // race with a file save) into a full minute of silent breakage, and an
+                    // attacker editing a YAML to make it invalid would lock out the plugin.
+                    // Short negative cache (5s) so admins see the error immediately on the
+                    // next request, plus a "broken" marker so repeated failures are obvious.
+                    Console.Error.WriteLine($"NxtSettings goInit [{plugin}] broken: {ex.GetType().Name}: {ex.Message}");
 
-                    init = new NxtSettings();
-                    hybridCache.Set(memKey, init, DateTime.Now.AddMinutes(1), inmemory: true);
+                    init = new NxtSettings { plugin = plugin, displayname = "[broken]" };
+                    hybridCache.Set(memKey, init, DateTime.Now.AddSeconds(5), inmemory: true);
                 }
             }
 

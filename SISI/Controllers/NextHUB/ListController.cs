@@ -193,8 +193,10 @@ namespace SISI.Controllers.NextHUB
             doc.LoadHtml(html);
 
             string eval = parse.eval;
+            // Why (FL-8): route YAML-supplied `.cs` references through SafeReadUnder so that a
+            // malicious `eval: ../../etc/passwd.cs` cannot read files outside NextHUB/sites.
             if (!string.IsNullOrEmpty(eval) && eval.EndsWith(".cs"))
-                eval = FileCache.ReadAllText($"NextHUB/sites/{eval}");
+                eval = Root.SafeReadUnder("NextHUB/sites", eval);
 
             if (string.IsNullOrEmpty(parse.nodes))
             {
@@ -443,8 +445,9 @@ namespace SISI.Controllers.NextHUB
                         await page.Context.AddCookiesAsync(init.cookies).ConfigureAwait(false);
 
                     string routeEval = conf.routeEval;
+                    // Why (FL-8): path-safe lookup so routeEval cannot escape NextHUB/sites.
                     if (!string.IsNullOrEmpty(routeEval) && routeEval.EndsWith(".cs"))
-                        routeEval = FileCache.ReadAllText($"NextHUB/sites/{routeEval}");
+                        routeEval = Root.SafeReadUnder("NextHUB/sites", routeEval);
 
                     await page.RouteAsync("**/*", async route =>
                     {

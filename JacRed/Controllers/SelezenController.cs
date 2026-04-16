@@ -205,7 +205,8 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"JacRed/selezen getCookie: {ex.Message}"); }
+            // Why (FL-16): type only — never the raw ex.Message (may leak URLs/creds to logs).
+            catch (Exception ex) { Console.WriteLine($"JacRed/selezen getCookie: {ex.GetType().Name}"); }
 
             return null;
         }

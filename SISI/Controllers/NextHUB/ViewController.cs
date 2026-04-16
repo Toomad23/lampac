@@ -120,8 +120,10 @@ namespace SISI.Controllers.NextHUB
                             await page.AddInitScriptAsync(init.view.addInitScript).ConfigureAwait(false);
 
                         string routeEval = init.view.routeEval;
+                        // Why (FL-8): route through SafeReadUnder so an attacker-controlled
+                        // routeEval value (e.g. `../../etc/passwd.cs`) cannot leak files.
                         if (!string.IsNullOrEmpty(routeEval) && routeEval.EndsWith(".cs"))
-                            routeEval = FileCache.ReadAllText($"NextHUB/sites/{routeEval}");
+                            routeEval = Root.SafeReadUnder("NextHUB/sites", routeEval);
 
                         #region RouteAsync
                         await page.RouteAsync("**/*", async route =>
@@ -373,12 +375,20 @@ namespace SISI.Controllers.NextHUB
                             {
                                 if (!string.IsNullOrEmpty(_content))
                                 {
-                                    string infile = $"NextHUB/sites/{init.view.eval ?? init.view.evalJS}";
-                                    if ((infile.EndsWith(".cs") || infile.EndsWith(".js")) && System.IO.File.Exists(infile))
-                                    {
-                                        string evaluate = FileCache.ReadAllText(infile);
+                                    // Why (FL-8): resolve the YAML-specified eval file through
+                                    // SafeReadUnder so path-traversal values are rejected. When
+                                    // the YAML value is a literal code snippet (no .cs/.js
+                                    // suffix) we pass it through unchanged — same as before.
+                                    string evalName = init.view.eval ?? init.view.evalJS;
+                                    bool isFileRef = evalName != null && (evalName.EndsWith(".cs") || evalName.EndsWith(".js"));
 
-                                        if (infile.EndsWith(".js"))
+                                    if (isFileRef)
+                                    {
+                                        string evaluate = Root.SafeReadUnder("NextHUB/sites", evalName);
+                                        if (string.IsNullOrEmpty(evaluate))
+                                            return null;
+
+                                        if (evalName.EndsWith(".js"))
                                             return page.EvaluateAsync<string>($"(html, plugin, url, file) => {{ {evaluate} }}", new { _content, plugin, url, cache.file });
 
                                         var nxt = new NxtEvalView(init, HttpContext.Request.Query, _content, plugin, url, cache.file, cache.headers, proxyManager);
@@ -591,22 +601,32 @@ namespace SISI.Controllers.NextHUB
         #region goEval
         static string goEval(string evalcode)
         {
-            string infile = $"NextHUB/sites/{evalcode}";
-            if (infile.EndsWith(".cs") && System.IO.File.Exists(infile))
-                evalcode = FileCache.ReadAllText(infile);
+            if (evalcode == null)
+                return null;
+
+            // Why (FL-8): evalcode may still be a bare filename here (older callers passed the
+            // YAML value directly). Route that lookup through SafeReadUnder so path traversal
+            // can't escape NextHUB/sites/.
+            if (evalcode.EndsWith(".cs"))
+            {
+                string loaded = Root.SafeReadUnder("NextHUB/sites", evalcode);
+                if (!string.IsNullOrEmpty(loaded))
+                    evalcode = loaded;
+            }
 
             if (evalcode.Contains("{include:"))
             {
+                // Why (FL-8): `{include:<file>}` tokens resolve against NextHUB/utils/. A token
+                // like `{include:../sites/secret.cs}` previously happily left the utils dir.
+                // SafeReadUnder rejects separators/traversal and enforces containment.
                 string includePattern = @"{include:(?<file>[^}]+)}";
                 var matches = Regex.Matches(evalcode, includePattern);
                 foreach (Match match in matches)
                 {
                     string file = match.Groups["file"].Value.Trim();
-                    if (System.IO.File.Exists($"NextHUB/utils/{file}"))
-                    {
-                        string includeCode = FileCache.ReadAllText($"NextHUB/utils/{file}");
+                    string includeCode = Root.SafeReadUnder("NextHUB/utils", file);
+                    if (!string.IsNullOrEmpty(includeCode))
                         evalcode = evalcode.Replace(match.Value, includeCode);
-                    }
                 }
             }
 

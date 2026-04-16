@@ -77,6 +77,15 @@ namespace Lampac.Engine
             if (string.IsNullOrEmpty(uid))
                 return;
 
+            // When an account-db is active the client's uid is established by
+            // authentication (domain pattern or access token). Refuse client-
+            // supplied registrations that don't match — otherwise an attacker
+            // could register with a victim's uid and silently receive events.
+            var httpContext = Context.GetHttpContext();
+            string authUid = httpContext?.Features.Get<RequestModel>()?.user_uid;
+            if (!string.IsNullOrEmpty(authUid) && uid != authUid)
+                return;
+
             event_clients.AddOrUpdate(Context.ConnectionId, uid, (k,v) => uid);
         }
 
@@ -91,6 +100,10 @@ namespace Lampac.Engine
             if (hubClients == null || string.IsNullOrEmpty(uid) || string.IsNullOrEmpty(name) || (data != null && data.Length > 10_000000))
                 return;
 
+            // Sender must be a registered member of the target uid group.
+            if (!event_clients.TryGetValue(Context.ConnectionId, out string senderUid) || senderUid != uid)
+                return;
+
             try
             {
                 var clients = event_clients.Where(i => i.Value == uid && i.Key != Context.ConnectionId);
@@ -103,6 +116,14 @@ namespace Lampac.Engine
         public async Task eventsId(string connectionId, string uid, string name, string data)
         {
             if (hubClients == null || string.IsNullOrEmpty(connectionId) || string.IsNullOrEmpty(name) || (data != null && data.Length > 10_000000))
+                return;
+
+            // Sender and target must share a uid registration — prevents
+            // fabricated events being pushed to any connection id that
+            // leaked via OpenStat / prior event broadcasts.
+            if (!event_clients.TryGetValue(Context.ConnectionId, out string senderUid))
+                return;
+            if (!event_clients.TryGetValue(connectionId, out string targetUid) || targetUid != senderUid)
                 return;
 
             try

@@ -297,8 +297,19 @@ namespace Lampac.Engine
                 case "registryevent":
                 {
                     string uid = GetStringArg(args, 0);
-                    if (!string.IsNullOrEmpty(uid))
-                        event_clients.AddOrUpdate(connection.ConnectionId, uid, (_, __) => uid);
+                    if (string.IsNullOrEmpty(uid))
+                        break;
+
+                    // When an account-db is active the client's uid is established
+                    // by authentication (domain pattern or access token). Refuse
+                    // client-supplied registrations that don't match — otherwise
+                    // an attacker registers with a victim's uid and silently joins
+                    // their event group.
+                    string authUid = connection.RequestInfo?.user_uid;
+                    if (!string.IsNullOrEmpty(authUid) && uid != authUid)
+                        break;
+
+                    event_clients.AddOrUpdate(connection.ConnectionId, uid, (_, __) => uid);
                     break;
                 }
 
@@ -308,12 +319,17 @@ namespace Lampac.Engine
                     string name = GetStringArg(args, 1);
                     string data = GetStringArg(args, 2);
 
+                    // Sender must be a registered member of the target uid group.
+                    if (!event_clients.TryGetValue(connection.ConnectionId, out string senderUid) ||
+                        string.IsNullOrEmpty(uid) || senderUid != uid)
+                        break;
+
                     if (name == "devices")
                     {
                         var uidClients = event_clients
                             .Where(i => i.Value == uid)
                             .ToDictionary();
-                        
+
                         var devices = _connections
                             .Where(i => i.Value.ConnectionId != connection.ConnectionId)
                             .Where(i =>
@@ -340,6 +356,15 @@ namespace Lampac.Engine
                     string uid = GetStringArg(args, 1);
                     string name = GetStringArg(args, 2);
                     string data = GetStringArg(args, 3);
+
+                    // Sender and target must share a uid registration — otherwise
+                    // any client could push fabricated events to any connection id
+                    // they learn via OpenStat or prior event broadcasts.
+                    if (!event_clients.TryGetValue(connection.ConnectionId, out string senderUid))
+                        break;
+                    if (!event_clients.TryGetValue(targetConnection, out string targetUid) || targetUid != senderUid)
+                        break;
+
                     await SendEventToConnection(targetConnection, uid, name, data).ConfigureAwait(false);
                     break;
                 }

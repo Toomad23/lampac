@@ -102,8 +102,12 @@ namespace Merchant.Controllers
 
                 try
                 {
+                    // Why: guard against misconfiguration — accessForMonths == 0 would cause divide-by-zero (cost = +Infinity ⇒ days = 0) and then the downstream fallback credits full months anyway.
+                    if (AppInit.conf.Merchant.accessForMonths <= 0 || AppInit.conf.Merchant.accessCost <= 0)
+                        continue;
+
                     double kurs = await LtcKurs();
-                    if (kurs == -1)
+                    if (kurs == -1 || kurs <= 0)
                         continue;
 
                     var root = await Http.Post<RootTransactions>(AppInit.conf.Merchant.LtcWallet.rpc, "{\"method\": \"listtransactions\", \"params\": [\"*\", 20]}", headers: HeadersModel.Init("Authorization", $"Basic {CrypTo.Base64($"{AppInit.conf.Merchant.LtcWallet.rpcuser}:{AppInit.conf.Merchant.LtcWallet.rpcpassword}")}"));
@@ -111,6 +115,10 @@ namespace Merchant.Controllers
                     var transactions = root?.result;
                     if (transactions == null || transactions.Count == 0)
                         continue;
+
+                    // Why: listtransactions is capped at 20; if the wallet returns a full page we may be silently dropping older receives — surface it to ops.
+                    if (transactions.Count >= 20)
+                        Console.WriteLine("Litecoin: listtransactions returned full page (20) — older receives may be missed; consider paging via listsinceblock.");
 
                     foreach (var trans in transactions)
                     {
@@ -126,7 +134,32 @@ namespace Merchant.Controllers
                             IO.WriteAllText($"merchant/invoice/litecoin/{trans.txid}.txid", $"{email}\n{trans.address}");
 
                             double cost = (double)AppInit.conf.Merchant.accessCost / (double)(AppInit.conf.Merchant.accessForMonths * 30);
-                            PayConfirm(email, "litecoin", $"{trans.address} - {trans.txid}", days: (int)((trans.amount * kurs) / cost));
+                            if (!(cost > 0) || double.IsNaN(cost) || double.IsInfinity(cost))
+                                continue;
+
+                            double rawDays = (trans.amount * kurs) / cost;
+                            if (double.IsNaN(rawDays) || double.IsInfinity(rawDays) || rawDays < 1.0)
+                                continue; // Why: dust / sub-cost payments must not grant access — the fallback PayConfirm(..., 0) path would otherwise credit full months.
+
+                            // Why: clamp before cast to avoid silent double→int overflow wrap; 20 years is a generous upper bound for a single payment.
+                            const int maxDays = 366 * 20; // 7320
+                            if (rawDays > maxDays)
+                                rawDays = maxDays;
+
+                            int days;
+                            try
+                            {
+                                days = checked((int)rawDays);
+                            }
+                            catch (OverflowException)
+                            {
+                                continue;
+                            }
+
+                            if (days <= 0)
+                                continue;
+
+                            PayConfirm(email, "litecoin", $"{trans.address} - {trans.txid}", days: days);
                         }
                         catch { }
                     }

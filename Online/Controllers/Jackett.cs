@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace Online.Controllers
@@ -51,7 +52,11 @@ namespace Online.Controllers
 
                 string active = q == quality ? "active" : "";
 
-                html += "<div class=\"videos__button selector " + active + "\" data-json='{\"method\":\"link\",\"url\":\"" + link + "\"}'>" + $"{q}p" + "</div>";
+                // Why (FM-6): build the data-json payload via JsonConvert then HtmlEncode so
+                // neither JSON nor HTML metacharacters from user-influenced fields can break
+                // out of the attribute (stored XSS). Visible text goes through HtmlEncode too.
+                string qjson = HttpUtility.HtmlEncode(JsonConvert.SerializeObject(new { method = "link", url = link }));
+                html += "<div class=\"videos__button selector " + active + "\" data-json='" + qjson + "'>" + HttpUtility.HtmlEncode($"{q}p") + "</div>";
                 firstjson = false;
             }
 
@@ -79,7 +84,20 @@ namespace Online.Controllers
                         continue;
                 }
 
-                html += "<div class=\"videos__item videos__torrent selector " + (firstjson ? "focused" : "") + "\" media=\"\" data-json='{\"method\":\"torrent\",\"Link\":\"" + magnet + "\",\"title\":\"" + (title ?? original_title) + "\"}'><div class=\"videos__torrent-title\">" + item.Value<string>("Title") + $"</div><div class=\"videos__item-title\">Размер {sizeName} / Раздают {sid} / Качают {pir} / {q}p / {tracker}</div></div>";
+                // Why (FM-6): Title/tracker/magnet are attacker-controllable data coming from
+                // indexers. Build JSON via serializer, HtmlEncode the attribute value, and
+                // HtmlEncode each visible text fragment so a crafted torrent title cannot
+                // inject <script> or close the data-json='…' attribute.
+                string itemJson = HttpUtility.HtmlEncode(JsonConvert.SerializeObject(new
+                {
+                    method = "torrent",
+                    Link = magnet,
+                    title = title ?? original_title
+                }));
+                string itemTitle = HttpUtility.HtmlEncode(item.Value<string>("Title") ?? string.Empty);
+                string itemMeta = HttpUtility.HtmlEncode($"Размер {sizeName} / Раздают {sid} / Качают {pir} / {q}p / {tracker}");
+
+                html += "<div class=\"videos__item videos__torrent selector " + (firstjson ? "focused" : "") + "\" media=\"\" data-json='" + itemJson + "'><div class=\"videos__torrent-title\">" + itemTitle + "</div><div class=\"videos__item-title\">" + itemMeta + "</div></div>";
                 firstjson = false;
             }
 

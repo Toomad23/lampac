@@ -63,7 +63,10 @@ namespace Online.Controllers
             }
             #endregion
 
-            var cache = await InvokeCacheResult<EmbedModel>($"kinobase:view:{href}:{proxyManager?.CurrentProxyIp}", 20, async e =>
+            // Why (FM-9): href is user-supplied; fingerprint in the cache key when oversized
+            // so attackers cannot blow up the key space (mirrors PR #18 M-24).
+            string hrefKey = !string.IsNullOrEmpty(href) && href.Length > 256 ? CrypTo.md5(href) : href;
+            var cache = await InvokeCacheResult<EmbedModel>($"kinobase:view:{hrefKey}:{proxyManager?.CurrentProxyIp}", 20, async e =>
             {
                 var content = await oninvk.Embed(href, init.playerjs);
                 if (content == null)

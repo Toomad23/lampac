@@ -32,7 +32,17 @@ namespace Online.Controllers
             }
             else
             {
-                var postdata = new System.Net.Http.StringContent($"{{\"email\":\"{login}\",\"password\":\"{pass}\",\"fingerprint\":\"{CrypTo.md5(DateTime.Now.ToString())}\",\"device\":{{}}}}", Encoding.UTF8, "application/json");
+                // Why (FM-7): hand-concatenated JSON lets a caller inject additional fields or
+                // break the document with a literal " in login/pass. Serialize via JsonConvert
+                // so every string is properly quoted and escaped.
+                string body = JsonConvert.SerializeObject(new
+                {
+                    email = login,
+                    password = pass,
+                    fingerprint = CrypTo.md5(DateTime.Now.ToString()),
+                    device = new { }
+                });
+                var postdata = new System.Net.Http.StringContent(body, Encoding.UTF8, "application/json");
                 var result =  await Http.Post<JObject>($"{init.corsHost()}/api/login", postdata, httpversion: init.GetHttpVersion(), proxy: proxy, headers: httpHeaders(init));
 
                 if (result == null)
@@ -56,9 +66,17 @@ namespace Online.Controllers
 
             if (string.IsNullOrEmpty(orid) && !string.IsNullOrEmpty(source) && !string.IsNullOrEmpty(id))
             {
-                if (source.ToLower() == "getstv")
+                // Why (FM-11): id is about to be concatenated into "/api/movies/{orid}". Without
+                // a character class a caller can inject path segments or query markers to steer
+                // the upstream GET. Restrict to the PR #12 M-13 set.
+                if (source.ToLower() == "getstv" && Regex.IsMatch(id, "^[A-Za-z0-9_\\-]+$"))
                     orid = id;
             }
+
+            // Why (FM-11): orid can also arrive directly as a query parameter; keep the same
+            // allow-list invariant for the server-side path segment.
+            if (!string.IsNullOrEmpty(orid) && !Regex.IsMatch(orid, "^[A-Za-z0-9_\\-]+$"))
+                return OnError();
 
             if (string.IsNullOrEmpty(orid))
             {
@@ -76,7 +94,10 @@ namespace Online.Controllers
             }
 
             rhubFallback:
-            var cache = await InvokeCacheResult<JObject>($"getstv:movies:{orid}", 20, async e =>
+            // Why (FM-9): orid arrives from the client; md5-fingerprint it in the cache key
+            // when oversized so memory stays bounded (mirrors PR #18 M-24).
+            string oridKey = !string.IsNullOrEmpty(orid) && orid.Length > 256 ? CrypTo.md5(orid) : orid;
+            var cache = await InvokeCacheResult<JObject>($"getstv:movies:{oridKey}", 20, async e =>
             {
                 var root = await httpHydra.Get<JObject>($"{init.corsHost()}/api/movies/{orid}", 
                     addheaders: bearer, safety: true

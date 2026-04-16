@@ -161,7 +161,11 @@ namespace Online.Controllers
 
             if (string.IsNullOrWhiteSpace(init.secret_token))
             {
-                var streams = await InvokeCache($"kodik:video:{link}:{play}", 40, () => oninvk.VideoParse(init.linkhost, link));
+                // Why (FM-9): link is user-supplied; cap its contribution to the cache key
+                // via md5 fingerprint so oversized input cannot blow up memory (mirrors PR
+                // #18 M-24).
+                string linkKey = !string.IsNullOrEmpty(link) && link.Length > 256 ? CrypTo.md5(link) : link;
+                var streams = await InvokeCache($"kodik:video:{linkKey}:{play}", 40, () => oninvk.VideoParse(init.linkhost, link));
                 if (streams == null)
                     return OnError();
 

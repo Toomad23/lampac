@@ -36,6 +36,8 @@ namespace Shared.PlaywrightCore
 
         static IBrowser browser = null;
 
+        static readonly object browserLock = new();
+
         static bool shutdown = false;
 
         public static PlaywrightStatus Status { get; private set; } = PlaywrightStatus.disabled;
@@ -47,8 +49,11 @@ namespace Shared.PlaywrightCore
             try
             {
                 var init = AppInit.conf.chromium;
-                if (!init.enable || browser != null || shutdown)
-                    return;
+                lock (browserLock)
+                {
+                    if (!init.enable || browser != null || shutdown)
+                        return;
+                }
 
                 string executablePath = init.executablePath;
 
@@ -148,11 +153,11 @@ namespace Shared.PlaywrightCore
 
                 Console.WriteLine("Chromium: Initialization");
 
-                playwright = await Playwright.CreateAsync();
+                var newPlaywright = await Playwright.CreateAsync();
 
                 Console.WriteLine("Chromium: CreateAsync");
 
-                browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                var newBrowser = await newPlaywright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
                 {
                     Headless = init.Headless,
                     ExecutablePath = executablePath,
@@ -162,21 +167,32 @@ namespace Shared.PlaywrightCore
 
                 Console.WriteLine("Chromium: LaunchAsync");
 
-                Status = init.Headless ? PlaywrightStatus.headless : PlaywrightStatus.NoHeadless;
-                Console.WriteLine($"Chromium: v{browser.Version} / {Status.ToString()} / {browser.IsConnected}");
-
+                IBrowserContext newKeepopenContext = null;
                 if (AppInit.conf.chromium.context.keepopen)
                 {
-                    create_keepopen_context = DateTime.Now;
-                    var kpc = await browser.NewContextAsync(baseContextOptions);
+                    var kpc = await newBrowser.NewContextAsync(baseContextOptions);
                     await kpc.NewPageAsync();
-                    keepopen_context = kpc;
+                    newKeepopenContext = kpc;
+                }
+
+                lock (browserLock)
+                {
+                    playwright = newPlaywright;
+                    browser = newBrowser;
+                    Status = init.Headless ? PlaywrightStatus.headless : PlaywrightStatus.NoHeadless;
+                    Console.WriteLine($"Chromium: v{browser.Version} / {Status.ToString()} / {browser.IsConnected}");
+
+                    if (newKeepopenContext != null)
+                    {
+                        create_keepopen_context = DateTime.Now;
+                        keepopen_context = newKeepopenContext;
+                    }
                 }
             }
-            catch (Exception ex) 
+            catch (Exception ex)
             {
-                Status = PlaywrightStatus.disabled;
-                Console.WriteLine($"Chromium: {ex.Message}"); 
+                lock (browserLock) { Status = PlaywrightStatus.disabled; }
+                Console.WriteLine($"Chromium: {ex.Message}");
             }
         }
         #endregion
@@ -218,7 +234,7 @@ namespace Shared.PlaywrightCore
                     {
                         _ = keepopen_context.CloseAsync().ConfigureAwait(false);
                     }
-                    catch { }
+                    catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
 
                     keepopen_context = kpc;
                 }
@@ -241,12 +257,12 @@ namespace Shared.PlaywrightCore
                                         .ConfigureAwait(false);
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
                         }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
             finally
             {
                 Volatile.Write(ref _cronCloseLifetimeWork, 0);
@@ -285,68 +301,54 @@ namespace Shared.PlaywrightCore
 
                         bool isOk = false;
 
+                        // Primary liveness probe: does Playwright still think the browser is connected?
+                        // This avoids a 5-second reconnect cycle when the HTTP ping endpoint happens to
+                        // be unreachable (e.g. Kestrel bound only on a unix socket, different listen
+                        // IP/port than configured, reverse proxy not forwarding /api/chromium/ping).
                         try
                         {
                             stats_ping = (DateTime.Now, 5, null);
-                            IPage p = keepopen_context != null ? await keepopen_context.NewPageAsync() : await browser.NewPageAsync();
-                            if (p != null)
-                            {
-                                try
-                                {
-                                    var options = new PageGotoOptions
-                                    {
-                                        Timeout = 5000, // 5 секунд
-                                        WaitUntil = WaitUntilState.DOMContentLoaded
-                                    };
-
-                                    var r = await p.GotoAsync($"http://{AppInit.conf.listen.localhost}:{AppInit.conf.listen.port}/api/chromium/ping", options);
-                                    if (r != null)
-                                    {
-                                        stats_ping = (DateTime.Now, r.Status, null);
-                                        if (r.Status == 200)
-                                            isOk = true;
-                                    }
-                                }
-                                finally
-                                {
-                                    await p.CloseAsync();
-                                }
-                            }
+                            var probe = browser;
+                            if (probe != null && probe.IsConnected)
+                                isOk = true;
                         }
                         catch
                         {
-                            stats_ping = (DateTime.Now, 500, null);
+                            stats_ping = (DateTime.Now, 499, null);
                         }
 
                         if (!isOk)
                         {
                             Console.WriteLine("\nChromium: Browser_Disconnected");
 
-                            Status = PlaywrightStatus.disabled;
-
-                            keepopen_context = null;
-
-                            if (pages_keepopen != null)
-                                pages_keepopen.Clear();
+                            IBrowser oldBrowser;
+                            IPlaywright oldPlaywright;
+                            lock (browserLock)
+                            {
+                                Status = PlaywrightStatus.disabled;
+                                keepopen_context = null;
+                                pages_keepopen?.Clear();
+                                oldBrowser = browser;
+                                oldPlaywright = playwright;
+                                browser = null;
+                                playwright = null;
+                            }
 
                             try
                             {
-                                if (browser != null)
+                                if (oldBrowser != null)
                                 {
-                                    await browser.CloseAsync();
-                                    await browser.DisposeAsync();
+                                    await oldBrowser.CloseAsync();
+                                    await oldBrowser.DisposeAsync();
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
 
                             try
                             {
-                                playwright.Dispose();
+                                oldPlaywright?.Dispose();
                             }
-                            catch { }
-
-                            browser = null;
-                            playwright = null;
+                            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
 
                             await CreateAsync();
                         }
@@ -358,7 +360,7 @@ namespace Shared.PlaywrightCore
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
             finally
             {
                 Volatile.Write(ref _cronBrowserDisconnectedWork, 0);
@@ -495,20 +497,19 @@ namespace Shared.PlaywrightCore
                     return page;
                 }
             }
-            catch { return null; }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); return null; }
         }
 
 
-        static bool workClearCookie = false;
+        static int workClearCookie = 0;
 
         async Task ClearCookie(IBrowserContext context)
         {
-            if (workClearCookie)
+            if (Interlocked.Exchange(ref workClearCookie, 1) == 1)
                 return;
 
             try
             {
-                workClearCookie = true;
                 var cookies = await context.CookiesAsync();
 
                 foreach (var cookie in cookies.Where(c => c.Name == "cf_clearance"))
@@ -522,8 +523,10 @@ namespace Shared.PlaywrightCore
                 }
             }
             catch { }
-
-            workClearCookie = false;
+            finally
+            {
+                Volatile.Write(ref workClearCookie, 0);
+            }
         }
 
 
@@ -537,7 +540,7 @@ namespace Shared.PlaywrightCore
                     WebLog(e.Method, e.Url, "RequestFailed", default, e);
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
         }
 
         void Page_Download(object sender, IDownload e)
@@ -546,7 +549,7 @@ namespace Shared.PlaywrightCore
             {
                 e.CancelAsync().ConfigureAwait(false);
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
         }
 
         void Page_Popup(object sender, IPage e)
@@ -555,7 +558,7 @@ namespace Shared.PlaywrightCore
             {
                 e.CloseAsync().ConfigureAwait(false);
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
         }
 
 
@@ -596,7 +599,7 @@ namespace Shared.PlaywrightCore
                     close();
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
         }
 
         public static void FullDispose()
@@ -609,7 +612,7 @@ namespace Shared.PlaywrightCore
             {
                 browser.CloseAsync().ContinueWith(t => browser.DisposeAsync());
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"Chromium: {ex.Message}"); }
         }
     }
 }

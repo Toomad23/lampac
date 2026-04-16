@@ -7,7 +7,6 @@ using Shared;
 using Shared.Engine;
 using Shared.Models.Module;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -37,16 +36,9 @@ namespace Lampac.Controllers
                 return false;
             }
 
-            string ipKey = $"Accsdb:auth:IP:{requestInfo.IP}";
-            if (!memoryCache.TryGetValue(ipKey, out ConcurrentDictionary<string, byte> passwds))
-            {
-                passwds = new ConcurrentDictionary<string, byte>();
-                memoryCache.Set(ipKey, passwds, DateTime.Today.AddDays(1));
-            }
+            int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
-            passwds.TryAdd(passwd, 0);
-
-            if (passwds.Count > 10)
+            if (attempts > 10)
             {
                 result = Content("Too many attempts, try again tomorrow.");
                 return false;
@@ -54,6 +46,10 @@ namespace Lampac.Controllers
 
             if (AppInit.rootPasswd == passwd)
                 return true;
+
+            // Wrong password — apply backoff (fire-and-forget; caller awaits nothing here,
+            // but the async delay runs before result is used since callers await the action).
+            AdminBruteGuard.BackoffAsync(attempts).GetAwaiter().GetResult();
 
             HttpContext.Response.Cookies.Delete("passwd");
             result = Redirect("/admin/auth");

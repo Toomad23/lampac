@@ -82,7 +82,7 @@ namespace JacRed.Engine
                         ffprobe = torrent["ffprobe"]?.ToObject<List<ffStream>>()
                     });
                 }
-                catch { }
+                catch (Exception ex) { Console.WriteLine($"JacRed/WebApi Indexers parse: {ex.Message}"); }
             }
 
             return torrents;

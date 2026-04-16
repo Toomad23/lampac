@@ -140,6 +140,12 @@ namespace JacRed.Controllers
 
 
         #region getCookie
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
         async static ValueTask<string> getCookie()
         {
             if (!string.IsNullOrEmpty(jackett.Animelayer.cookie))
@@ -156,61 +162,45 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "login", jackett.Animelayer.login.u },
+                    { "password", jackett.Animelayer.login.p }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.Animelayer.host}/auth/login/") { Content = postContent };
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string layer_id = null, layer_hash = null, PHPSESSID = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("layer_id="))
+                            layer_id = new Regex("layer_id=([^;]+)(;|$)").Match(line).Groups[1].Value;
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "login", jackett.Animelayer.login.u },
-                            { "password", jackett.Animelayer.login.p }
-                        };
+                        if (line.Contains("layer_hash="))
+                            layer_hash = new Regex("layer_hash=([^;]+)(;|$)").Match(line).Groups[1].Value;
 
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.Animelayer.host}/auth/login/", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string layer_id = null, layer_hash = null, PHPSESSID = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
+                        if (line.Contains("PHPSESSID="))
+                            PHPSESSID = new Regex("PHPSESSID=([^;]+)(;|$)").Match(line).Groups[1].Value;
+                    }
 
-                                        if (line.Contains("layer_id="))
-                                            layer_id = new Regex("layer_id=([^;]+)(;|$)").Match(line).Groups[1].Value;
-
-                                        if (line.Contains("layer_hash="))
-                                            layer_hash = new Regex("layer_hash=([^;]+)(;|$)").Match(line).Groups[1].Value;
-
-                                        if (line.Contains("PHPSESSID="))
-                                            PHPSESSID = new Regex("PHPSESSID=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(layer_id) && !string.IsNullOrWhiteSpace(layer_hash) && !string.IsNullOrWhiteSpace(PHPSESSID))
-                                    {
-                                        string cookie = $"layer_id={layer_id}; layer_hash={layer_hash}; PHPSESSID={PHPSESSID};";
-                                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
-                                        return cookie;
-                                    }
-                                }
-                            }
-                        }
+                    if (!string.IsNullOrWhiteSpace(layer_id) && !string.IsNullOrWhiteSpace(layer_hash) && !string.IsNullOrWhiteSpace(PHPSESSID))
+                    {
+                        string cookie = $"layer_id={layer_id}; layer_hash={layer_hash}; PHPSESSID={PHPSESSID};";
+                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
+                        return cookie;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/animelayer getCookie: {ex.Message}"); }
 
             return null;
         }

@@ -85,7 +85,7 @@ namespace JacRed.Engine
                 if (File.Exists($"cache/jacred/masterDb_{DateTime.Today.AddDays(-2):dd-MM-yyyy}.bz"))
                     File.Delete($"cache/jacred/masterDb_{DateTime.Today.AddDays(-2):dd-MM-yyyy}.bz");
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/FileDB SaveChangesToFile: {ex.Message}"); }
         }
         #endregion
 
@@ -110,7 +110,7 @@ namespace JacRed.Engine
                     foreach (string key in deleteKeys) 
                         openWriteTask.TryRemove(key, out _);
                 }
-                catch { }
+                catch (Exception ex) { Console.WriteLine($"JacRed/FileDB Cron: {ex.Message}"); }
             }
         }
 
@@ -138,7 +138,7 @@ namespace JacRed.Engine
                             openWriteTask.TryRemove(key, out _);
                     }
                 }
-                catch { }
+                catch (Exception ex) { Console.WriteLine($"JacRed/FileDB CronFast: {ex.Message}"); }
             }
         }
         #endregion

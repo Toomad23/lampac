@@ -5,6 +5,8 @@ using Shared.Models.Proxy;
 using Shared.Models.SQL;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 
@@ -14,6 +16,18 @@ namespace Shared.Engine
     {
         #region ProxyLink
         static readonly ConcurrentDictionary<string, ProxyLinkModel> links = new();
+
+        // HMAC-SHA256 key derived from rootPasswd — prevents forging non-AES proxy link IDs.
+        static readonly byte[] proxyLinkKey = SHA256.HashData(
+            Encoding.UTF8.GetBytes((AppInit.rootPasswd ?? "fallback") + "|proxylink"));
+
+        static string HmacId(string uri, string reqip)
+        {
+            using var h = new HMACSHA256(proxyLinkKey);
+            byte[] bytes = h.ComputeHash(Encoding.UTF8.GetBytes(uri + "|" + reqip));
+            // First 16 bytes as hex → 32 lowercase chars; matches IsAes length heuristic.
+            return Convert.ToHexString(bytes, 0, 16).ToLower();
+        }
 
         static readonly Timer _cronTimer = new Timer(Cron, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
@@ -60,7 +74,7 @@ namespace Shared.Engine
             else
             {
                 IsMd5 = true;
-                hash = CrypTo.md5(uri_clear + (verifyip && AppInit.conf.serverproxy.verifyip ? reqip : string.Empty));
+                hash = HmacId(uri_clear, verifyip && AppInit.conf.serverproxy.verifyip ? (reqip ?? string.Empty) : string.Empty);
             }
 
             if (IsProxyImg)

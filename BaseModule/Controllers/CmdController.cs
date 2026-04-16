@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.Scripting;
 using Shared;
 using Shared.Engine;
 using Shared.Models.CSharpGlobals;
+using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
 
@@ -15,6 +16,21 @@ namespace Lampac.Controllers
         [Route("cmd/{key}/{*comand}")]
         async public Task CMD(string key, string comand)
         {
+            // /cmd/{key} executes operator-configured shell commands or arbitrary
+            // Roslyn C# scripts. This is effectively RCE-over-HTTP and must be
+            // gated: loopback OR the caller must present the admin passwd cookie.
+            string clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+            bool isLocal = clientIp != null && Shared.Engine.Utilities.IPNetwork.IsLocalIp(clientIp);
+            bool isAdmin = HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
+                           && !string.IsNullOrEmpty(cookiePasswd)
+                           && cookiePasswd == AppInit.rootPasswd;
+
+            if (!isLocal && !isAdmin)
+            {
+                HttpContext.Response.StatusCode = 403;
+                return;
+            }
+
             if (!AppInit.conf.cmd.TryGetValue(key, out var cmd))
                 return;
 

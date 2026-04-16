@@ -34,7 +34,14 @@ namespace JacRed.Controllers
             }
             #endregion
 
-            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={id}&action=2", $"id={id}&action=2", "__cfduid=d476ac2d9b5e18f2b67707b47ebd9b8cd1560164391; uid=20520283; pass=ouV5FJdFCd;", proxy: proxyManager.Get(), timeoutSeconds: 10);
+            // Use the operator-configured cookie only. Previously this fell back to
+            // hardcoded leaked credentials for uid=20520283, which identified every
+            // request with someone else's account and was certain to be banned.
+            string kinozalCookie = jackett.Kinozal.cookie ?? Cookie;
+            if (string.IsNullOrEmpty(kinozalCookie))
+                return Content("error");
+
+            string srv_details = await Http.Post($"{jackett.Kinozal.host}/get_srv_details.php?id={id}&action=2", $"id={id}&action=2", kinozalCookie, proxy: proxyManager.Get(), timeoutSeconds: 10);
             if (srv_details != null)
             {
                 string torrentHash = new Regex("<ul><li>Инфо хеш: +([^<]+)</li>").Match(srv_details).Groups[1].Value;
@@ -58,7 +65,7 @@ namespace JacRed.Controllers
             if (html != null && html.Contains("Кинозал.ТВ</title>"))
             {
                 if (!html.Contains(">Выход</a>") && !string.IsNullOrWhiteSpace(jackett.Kinozal.login.u) && !string.IsNullOrWhiteSpace(jackett.Kinozal.login.p))
-                    TakeLogin();
+                    _ = TakeLogin();
             }
             else if (html == null)
             {
@@ -201,7 +208,13 @@ namespace JacRed.Controllers
         #region Cookie / TakeLogin
         static string Cookie;
 
-        async static void TakeLogin()
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
+        async static Task TakeLogin()
         {
             string authKey = "kinozal:TakeLogin()";
             if (Startup.memoryCache.TryGetValue(authKey, out _))
@@ -211,58 +224,42 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "username", jackett.Kinozal.login.u },
+                    { "password", jackett.Kinozal.login.p },
+                    { "returnto", "" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.Kinozal.host}/takelogin.php") { Content = postContent };
+                request.Headers.TryAddWithoutValidation("origin", jackett.Kinozal.host);
+                request.Headers.TryAddWithoutValidation("referer", $"{jackett.Kinozal.host}/");
+                request.Headers.TryAddWithoutValidation("upgrade-insecure-requests", "1");
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string uid = null, pass = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
-                        client.DefaultRequestHeaders.Add("origin", jackett.Kinozal.host);
-                        client.DefaultRequestHeaders.Add("referer", $"{jackett.Kinozal.host}/");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("uid="))
+                            uid = new Regex("uid=([0-9]+)").Match(line).Groups[1].Value;
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "username", jackett.Kinozal.login.u },
-                            { "password", jackett.Kinozal.login.p },
-                            { "returnto", "" }
-                        };
-
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.Kinozal.host}/takelogin.php", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string uid = null, pass = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        if (line.Contains("uid="))
-                                            uid = new Regex("uid=([0-9]+)").Match(line).Groups[1].Value;
-
-                                        if (line.Contains("pass="))
-                                            pass = new Regex("pass=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(uid) && !string.IsNullOrWhiteSpace(pass))
-                                        Cookie = $"uid={uid}; pass={pass};";
-                                }
-                            }
-                        }
+                        if (line.Contains("pass="))
+                            pass = new Regex("pass=([^;]+)(;|$)").Match(line).Groups[1].Value;
                     }
+
+                    if (!string.IsNullOrWhiteSpace(uid) && !string.IsNullOrWhiteSpace(pass))
+                        Cookie = $"uid={uid}; pass={pass};";
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/kinozal TakeLogin: {ex.Message}"); }
         }
         #endregion
     }

@@ -8,6 +8,7 @@ using Shared.Models.Module;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +21,25 @@ namespace TorrServer
 
         public static int tsport = 9080;
 
-        public static string tspass = CrypTo.md5(DateTime.Now.ToBinary().ToString());
+        public static string tspass = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
+        static string TryReadExistingTsPass(string accsDbPath)
+        {
+            try
+            {
+                if (!File.Exists(accsDbPath))
+                    return null;
+
+                string raw = File.ReadAllText(accsDbPath);
+                if (string.IsNullOrWhiteSpace(raw))
+                    return null;
+
+                var obj = JObject.Parse(raw);
+                string existing = obj.Value<string>("ts");
+                return string.IsNullOrEmpty(existing) ? null : existing;
+            }
+            catch { return null; }
+        }
 
         public static string homedir;
 
@@ -123,7 +142,14 @@ namespace TorrServer
                 tspath = Path.Combine(homedir, "TorrServer-windows-amd64.exe");
             #endregion
 
-            File.WriteAllText(Path.Combine(homedir, "accs.db"), $"{{\"ts\":\"{tspass}\"}}");
+            #region tspass: reuse across Lampac-only restarts
+            string accsDbPath = Path.Combine(homedir, "accs.db");
+            string existingPass = TryReadExistingTsPass(accsDbPath);
+            if (!string.IsNullOrEmpty(existingPass))
+                tspass = existingPass;
+            else
+                File.WriteAllText(accsDbPath, $"{{\"ts\":\"{tspass}\"}}");
+            #endregion
 
             ThreadPool.QueueUserWorkItem(async _ =>
             {
@@ -213,8 +239,25 @@ namespace TorrServer
                 }
                 #endregion
 
+                int _restartFailures = 0;
+                DateTime _failWindowStart = DateTime.UtcNow;
+                int _backoffMs = 5_000;
+
                 while (!IsShutdown && File.Exists(tspath))
                 {
+                    // Give up after 10 failures within 1 hour
+                    if (DateTime.UtcNow - _failWindowStart > TimeSpan.FromHours(1))
+                    {
+                        _restartFailures = 0;
+                        _failWindowStart = DateTime.UtcNow;
+                    }
+                    if (_restartFailures >= 10)
+                    {
+                        Console.WriteLine("TorrServer: too many restarts, giving up");
+                        break;
+                    }
+
+                    var startedAt = DateTime.UtcNow;
                     try
                     {
                         tsprocess = new Process();
@@ -226,8 +269,8 @@ namespace TorrServer
 
                         tsprocess.Start();
 
-                        tsprocess.OutputDataReceived += (sender, args) => { };
-                        tsprocess.ErrorDataReceived += (sender, args) => { };
+                        tsprocess.OutputDataReceived += (sender, e) => { if (e.Data != null) Console.WriteLine($"TorrServer: {e.Data}"); };
+                        tsprocess.ErrorDataReceived += (sender, e) => { if (e.Data != null) Console.WriteLine($"TorrServer: {e.Data}"); };
                         tsprocess.BeginOutputReadLine();
                         tsprocess.BeginErrorReadLine();
 
@@ -235,7 +278,23 @@ namespace TorrServer
                     }
                     catch { }
 
-                    await Task.Delay(10_000);
+                    if ((DateTime.UtcNow - startedAt).TotalSeconds >= 60)
+                    {
+                        // Healthy run — reset backoff
+                        _restartFailures = 0;
+                        _failWindowStart = DateTime.UtcNow;
+                        _backoffMs = 5_000;
+                    }
+                    else
+                    {
+                        _restartFailures++;
+                        Console.WriteLine($"TorrServer: restart #{_restartFailures}, backoff {_backoffMs / 1000}s");
+                        await Task.Delay(_backoffMs);
+                        _backoffMs = Math.Min(_backoffMs * 2, 300_000); // cap at 5 min
+                        continue;
+                    }
+
+                    await Task.Delay(5_000);
                 }
             });
         }

@@ -140,6 +140,12 @@ namespace JacRed.Controllers
 
 
         #region getCookie
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
         async static ValueTask<string> getCookie()
         {
             if (!string.IsNullOrEmpty(jackett.Selezen.cookie))
@@ -156,57 +162,41 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "login_name", jackett.Selezen.login.u },
+                    { "login_password", jackett.Selezen.login.p },
+                    { "login_not_save", "1" },
+                    { "login", "submit" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, jackett.Selezen.host) { Content = postContent };
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string PHPSESSID = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("PHPSESSID="))
+                            PHPSESSID = new Regex("PHPSESSID=([^;]+)(;|$)").Match(line).Groups[1].Value;
+                    }
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "login_name", jackett.Selezen.login.u },
-                            { "login_password", jackett.Selezen.login.p },
-                            { "login_not_save", "1" },
-                            { "login", "submit" }
-                        };
-
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync(jackett.Selezen.host, postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string PHPSESSID = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        if (line.Contains("PHPSESSID="))
-                                            PHPSESSID = new Regex("PHPSESSID=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(PHPSESSID))
-                                    {
-                                        string cookie = $"PHPSESSID={PHPSESSID}; _ym_isad=2;";
-                                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
-                                        return cookie;
-                                    }
-                                }
-                            }
-                        }
+                    if (!string.IsNullOrWhiteSpace(PHPSESSID))
+                    {
+                        string cookie = $"PHPSESSID={PHPSESSID}; _ym_isad=2;";
+                        Startup.memoryCache.Set(authKey, cookie, DateTime.Today.AddDays(1));
+                        return cookie;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/selezen getCookie: {ex.Message}"); }
 
             return null;
         }

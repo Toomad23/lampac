@@ -7,6 +7,41 @@ namespace Online.Controllers
     {
         public Animebesst() : base(AppInit.conf.Animebesst) { }
 
+        // The uri query parameter is fetched server-side, which turns this controller
+        // into an SSRF primitive if left unvalidated: a crafted uri like
+        // http://169.254.169.254/latest/meta-data/ would probe cloud metadata from
+        // Lampac's network. Require the host to be the configured animebesst host or
+        // a subdomain of it (e.g. cdn.animebesst.tv).
+        bool IsAllowedUri(string uri, bool schemeOptional)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return false;
+
+            string candidate = uri;
+            if (schemeOptional && !candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                  !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                candidate = "https://" + candidate;
+
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string configured = init?.host;
+            if (string.IsNullOrEmpty(configured))
+                return false;
+
+            if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                return false;
+
+            string allowedHost = configuredUri.Host;
+            string host = parsed.Host;
+
+            return host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase);
+        }
+
         [HttpGet]
         [Route("lite/animebesst")]
         async public Task<ActionResult> Index(string title, string uri, int s, bool rjson = false, bool similar = false)
@@ -96,14 +131,17 @@ namespace Online.Controllers
                 });
                 #endregion
             }
-            else 
+            else
             {
+                if (!IsAllowedUri(uri, schemeOptional: false))
+                    return OnError();
+
                 #region Серии
                 var cache = await InvokeCacheResult<List<(string episode, string name, string uri)>>($"animebesst:playlist:{uri}", 30, async e =>
                 {
                     var links = new List<(string episode, string name, string uri)>(5);
 
-                    await httpHydra.GetSpan(uri, news => 
+                    await httpHydra.GetSpan(uri, news =>
                     {
                         string videoList = Rx.Match(news, "var videoList ?=([^\n\r]+)");
                         if (videoList == null)
@@ -173,12 +211,15 @@ namespace Online.Controllers
                     return ShowError(rch_error);
             }
 
+            if (!IsAllowedUri(uri, schemeOptional: true))
+                return OnError();
+
             rhubFallback:
             var cache = await InvokeCacheResult<string>($"animebesst:video:{uri}", 30, async e =>
             {
                 string hls = null;
 
-                await httpHydra.GetSpan($"https://{uri}", addheaders: HeadersModel.Init("referer", init.host), spanAction: iframe => 
+                await httpHydra.GetSpan($"https://{uri}", addheaders: HeadersModel.Init("referer", init.host), spanAction: iframe =>
                 {
                     hls = Rx.Match(iframe, "file:\"(https?://[^\"]+\\.m3u8)\"");
                 });

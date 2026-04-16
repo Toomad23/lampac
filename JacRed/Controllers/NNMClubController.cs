@@ -68,12 +68,13 @@ namespace JacRed.Controllers
 
             #region html
             string data = $"prev_sd=0&prev_a=0&prev_my=0&prev_n=0&prev_shc=0&prev_shf=1&prev_sha=1&prev_shs=0&prev_shr=0&prev_sht=0&o=1&s=2&tm=-1&shf=1&sha=1&ta=-1&sns=-1&sds=-1&nm={HttpUtility.UrlEncode(query, Encoding.GetEncoding(1251))}&pn=&submit=%CF%EE%E8%F1%EA";
-            string html = await Http.Post($"{jackett.NNMClub.host}/forum/tracker.php", new System.Net.Http.StringContent(data, Encoding.UTF8, "application/x-www-form-urlencoded"), encoding: Encoding.GetEncoding(1251), proxy: proxyManager.Get(), timeoutSeconds: jackett.timeoutSeconds);
+            var cp1251 = Encoding.GetEncoding(1251);
+            string html = await Http.Post($"{jackett.NNMClub.host}/forum/tracker.php", new System.Net.Http.StringContent(data, cp1251, "application/x-www-form-urlencoded"), encoding: cp1251, proxy: proxyManager.Get(), timeoutSeconds: jackett.timeoutSeconds);
 
             if (html != null && html.Contains("NNM-Club</title>"))
             {
                 if (!html.Contains(">Выход") && !string.IsNullOrWhiteSpace(jackett.NNMClub.login.u) && !string.IsNullOrWhiteSpace(jackett.NNMClub.login.p))
-                    TakeLogin();
+                    _ = TakeLogin();
             }
             else if (html == null)
             {
@@ -209,7 +210,13 @@ namespace JacRed.Controllers
         #region Cookie / TakeLogin
         static string Cookie;
 
-        async static void TakeLogin()
+        static readonly System.Net.Http.HttpClient loginHttpClient = new System.Net.Http.HttpClient(new System.Net.Http.SocketsHttpHandler()
+        {
+            AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        });
+
+        async static Task TakeLogin()
         {
             string authKey = "nnmclub:TakeLogin()";
             if (Startup.memoryCache.TryGetValue(authKey, out _))
@@ -219,60 +226,44 @@ namespace JacRed.Controllers
 
             try
             {
-                using (var clientHandler = new System.Net.Http.HttpClientHandler()
+                var postParams = new Dictionary<string, string>
                 {
-                    AllowAutoRedirect = false
-                })
+                    { "redirect", "%2F" },
+                    { "username", jackett.NNMClub.login.u },
+                    { "password", jackett.NNMClub.login.p },
+                    { "autologin", "on" },
+                    { "login", "%C2%F5%EE%E4" }
+                };
+
+                using var postContent = new System.Net.Http.FormUrlEncodedContent(postParams);
+                var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"{jackett.NNMClub.host}/forum/login.php") { Content = postContent };
+                request.Headers.TryAddWithoutValidation("origin", jackett.NNMClub.host);
+                request.Headers.TryAddWithoutValidation("referer", $"{jackett.NNMClub.host}/");
+                request.Headers.TryAddWithoutValidation("upgrade-insecure-requests", "1");
+                foreach (var h in Http.defaultFullHeaders)
+                    request.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+                using var response = await loginHttpClient.SendAsync(request);
+                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
                 {
-                    clientHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
-                    using (var client = new System.Net.Http.HttpClient(clientHandler))
+                    string data = null, sid = null;
+                    foreach (string line in cook)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(jackett.timeoutSeconds);
-                        client.MaxResponseContentBufferSize = 2000000; // 2MB
-                        client.DefaultRequestHeaders.Add("origin", jackett.NNMClub.host);
-                        client.DefaultRequestHeaders.Add("referer", $"{jackett.NNMClub.host}/");
-                        client.DefaultRequestHeaders.Add("upgrade-insecure-requests", "1");
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
 
-                        foreach (var h in Http.defaultFullHeaders)
-                            client.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+                        if (line.Contains("phpbb2mysql_4_data="))
+                            data = new Regex("phpbb2mysql_4_data=([^;]+)(;|$)").Match(line).Groups[1].Value;
 
-                        var postParams = new Dictionary<string, string>
-                        {
-                            { "redirect", "%2F" },
-                            { "username", jackett.NNMClub.login.u },
-                            { "password", jackett.NNMClub.login.p },
-                            { "autologin", "on" },
-                            { "login", "%C2%F5%EE%E4" }
-                        };
-
-                        using (var postContent = new System.Net.Http.FormUrlEncodedContent(postParams))
-                        {
-                            using (var response = await client.PostAsync($"{jackett.NNMClub.host}/forum/login.php", postContent))
-                            {
-                                if (response.Headers.TryGetValues("Set-Cookie", out var cook))
-                                {
-                                    string data = null, sid = null;
-                                    foreach (string line in cook)
-                                    {
-                                        if (string.IsNullOrWhiteSpace(line))
-                                            continue;
-
-                                        if (line.Contains("phpbb2mysql_4_data="))
-                                            data = new Regex("phpbb2mysql_4_data=([^;]+)(;|$)").Match(line).Groups[1].Value;
-
-                                        if (line.Contains("phpbb2mysql_4_sid="))
-                                            sid = new Regex("phpbb2mysql_4_sid=([^;]+)(;|$)").Match(line).Groups[1].Value;
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(data) && !string.IsNullOrWhiteSpace(sid))
-                                        Cookie = $"phpbb2mysql_4_data={data}; phpbb2mysql_4_sid={sid};";
-                                }
-                            }
-                        }
+                        if (line.Contains("phpbb2mysql_4_sid="))
+                            sid = new Regex("phpbb2mysql_4_sid=([^;]+)(;|$)").Match(line).Groups[1].Value;
                     }
+
+                    if (!string.IsNullOrWhiteSpace(data) && !string.IsNullOrWhiteSpace(sid))
+                        Cookie = $"phpbb2mysql_4_data={data}; phpbb2mysql_4_sid={sid};";
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/nnmclub TakeLogin: {ex.Message}"); }
         }
         #endregion
     }

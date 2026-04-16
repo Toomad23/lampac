@@ -52,10 +52,18 @@ namespace Lampac.Engine.Middlewares
             {
                 if (IsValidQueryName(q.Key))
                 {
-                    string val = ValidQueryValue(sbQuery, q.Key, q.Value);
+                    var sanitized = new List<string>(q.Value.Count);
+                    foreach (var rawVal in q.Value)
+                    {
+                        sanitized.Add(ValidQueryValue(sbQuery, q.Key, new StringValues(rawVal)));
+                    }
+                    var sanitizedValues = new StringValues(sanitized.ToArray());
 
-                    if (dict.TryAdd(q.Key, val))
-                        builder.Add(q.Key, val);
+                    if (dict.TryAdd(q.Key, sanitizedValues))
+                    {
+                        foreach (var v in sanitized)
+                            builder.Add(q.Key, v);
+                    }
                 }
             }
 
@@ -144,7 +152,7 @@ namespace Lampac.Engine.Middlewares
                     continue;
                 }
 
-                if (name is "search" or "query" or "title" or "original_title" or "t")
+                if (name is "search" or "query" or "title" or "original_title" or "t" or "path")
                 {
                     if (
                         char.IsDigit(ch) || // ← символ цифрой Unicode

@@ -284,7 +284,7 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"JacRed/ApiController getSizeInfo: {ex.Message}"); }
 
             return 0;
         }

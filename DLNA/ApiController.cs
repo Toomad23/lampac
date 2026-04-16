@@ -33,6 +33,7 @@ namespace DLNA.Controllers
         static string defTrackers = "tr=http://retracker.local/announce&tr=http%3A%2F%2Fbt4.t-ru.org%2Fann%3Fmagnet&tr=http://retracker.mgts.by:80/announce&tr=http://tracker.city9x.com:2710/announce&tr=http://tracker.electro-torrent.pl:80/announce&tr=http://tracker.internetwarriors.net:1337/announce&tr=http://tracker2.itzmx.com:6961/announce&tr=udp://opentor.org:2710&tr=udp://public.popcorn-tracker.org:6969/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=http://bt.svao-ix.ru/announce&tr=udp://explodie.org:6969/announce&tr=wss://tracker.btorrent.xyz&tr=wss://tracker.openwebtorrent.com";
 
         static ClientEngine torrentEngine;
+        static readonly object torrentEngineLock = new object();
         static DateTime lastBullderClientEngineCall = DateTime.MinValue;
 
         public static void Initialization()
@@ -77,7 +78,9 @@ namespace DLNA.Controllers
                     {
                         await Task.Delay(TimeSpan.FromMinutes(1));
 
-                        if (torrentEngine == null)
+                        ClientEngine _snap;
+                        lock (torrentEngineLock) { _snap = torrentEngine; }
+                        if (_snap == null)
                             continue;
 
                         if (lastBullderClientEngineCall == DateTime.MinValue || DateTime.UtcNow - lastBullderClientEngineCall < TimeSpan.FromMinutes(10))
@@ -206,21 +209,27 @@ namespace DLNA.Controllers
         {
             lastBullderClientEngineCall = DateTime.UtcNow;
 
-            if (torrentEngine != null)
-                return Task.CompletedTask;
-
-            EngineSettingsBuilder engineSettingsBuilder = new EngineSettingsBuilder()
+            ClientEngine engine;
+            lock (torrentEngineLock)
             {
-                MaximumHalfOpenConnections = 20,
-                ConnectionTimeout = TimeSpan.FromSeconds(connectionTimeout),
-                MaximumDownloadRate = AppInit.conf.dlna.downloadSpeed,
-                MaximumUploadRate = AppInit.conf.dlna.uploadSpeed,
-                MaximumDiskReadRate = AppInit.conf.dlna.maximumDiskReadRate,
-                MaximumDiskWriteRate = AppInit.conf.dlna.maximumDiskWriteRate
-            };
+                if (torrentEngine != null)
+                    return Task.CompletedTask;
 
-            torrentEngine = new ClientEngine(engineSettingsBuilder.ToSettings());
-            return torrentEngine.StartAllAsync();
+                EngineSettingsBuilder engineSettingsBuilder = new EngineSettingsBuilder()
+                {
+                    MaximumHalfOpenConnections = 20,
+                    ConnectionTimeout = TimeSpan.FromSeconds(connectionTimeout),
+                    MaximumDownloadRate = AppInit.conf.dlna.downloadSpeed,
+                    MaximumUploadRate = AppInit.conf.dlna.uploadSpeed,
+                    MaximumDiskReadRate = AppInit.conf.dlna.maximumDiskReadRate,
+                    MaximumDiskWriteRate = AppInit.conf.dlna.maximumDiskWriteRate
+                };
+
+                torrentEngine = new ClientEngine(engineSettingsBuilder.ToSettings());
+                engine = torrentEngine;
+            }
+
+            return engine.StartAllAsync();
         }
         #endregion
 
@@ -249,11 +258,14 @@ namespace DLNA.Controllers
         {
             try
             {
-                if (torrentEngine?.Torrents != null)
+                ClientEngine e;
+                lock (torrentEngineLock) { e = torrentEngine; }
+
+                if (e?.Torrents != null)
                 {
                     var tdl = new List<TorrentManager>();
 
-                    foreach (var i in torrentEngine.Torrents)
+                    foreach (var i in e.Torrents)
                     {
                         if (hash != null)
                         {
@@ -289,29 +301,29 @@ namespace DLNA.Controllers
                         {
                             try
                             {
-                                torrentEngine.Torrents.Remove(item);
+                                e.Torrents.Remove(item);
                             }
                             catch { }
 
                             try
                             {
-                                await torrentEngine.RemoveAsync(item);
+                                await e.RemoveAsync(item);
                             }
                             catch { }
                         }
 
                     }
 
-                    if (torrentEngine.Torrents.Count == 0)
+                    if (e.Torrents.Count == 0)
                     {
                         try
                         {
-                            await torrentEngine.StopAllAsync();
+                            await e.StopAllAsync();
                         }
                         catch { }
 
-                        torrentEngine.Dispose();
-                        torrentEngine = null;
+                        e.Dispose();
+                        lock (torrentEngineLock) { if (torrentEngine == e) torrentEngine = null; }
                     }
                 }
             }
@@ -498,7 +510,8 @@ namespace DLNA.Controllers
             #region folders
             foreach (string folder in Directory.GetDirectories($"{dlna_path}/" + path))
             {
-                if (folder.Contains("thumbs") || folder.Contains("tmdb") || folder.Contains("temp"))
+                string _folderName = Path.GetFileName(folder);
+                if (_folderName == "thumbs" || _folderName == "tmdb" || _folderName == "temp")
                     continue;
 
                 int length = countFiles(folder);
@@ -508,10 +521,10 @@ namespace DLNA.Controllers
                     {
                         type = "folder",
                         name = Path.GetFileName(folder),
-                        uri = $"{host}/dlna?path={HttpUtility.UrlEncode(folder.Replace($"{dlna_path}/", ""))}",
+                        uri = $"{host}/dlna?path={HttpUtility.UrlEncode(Path.GetRelativePath(dlna_path, folder).Replace(Path.DirectorySeparatorChar, '/'))}",
                         img = getImage(CrypTo.md5(Path.GetFileName(folder))),
                         preview = getPreview(CrypTo.md5(Path.GetFileName(folder))),
-                        path = folder.Replace($"{dlna_path}/", ""),
+                        path = Path.GetRelativePath(dlna_path, folder).Replace(Path.DirectorySeparatorChar, '/'),
                         length = countFiles(folder),
                         creationTime = Directory.GetCreationTime(folder),
                         tmdb = getTmdb(Path.GetFileName(folder))
@@ -544,8 +557,11 @@ namespace DLNA.Controllers
                     if (episode > 0)
                     {
                         episodeTmdb = episodes.FirstOrDefault(i => i.Value<int>("episode_number") == episode)?.ToObject<JObject>();
-                        episodeTmdb.Remove("crew");
-                        episodeTmdb.Remove("guest_stars");
+                        if (episodeTmdb != null)
+                        {
+                            episodeTmdb.Remove("crew");
+                            episodeTmdb.Remove("guest_stars");
+                        }
 
                         if (episodeTmdb != null && episodeTmdb.ContainsKey("still_path"))
                             img = $"tmdb:/t/p/w400" + episodeTmdb.Value<string>("still_path");
@@ -559,11 +575,11 @@ namespace DLNA.Controllers
                 {
                     type = "file",
                     name = name,
-                    uri = $"{host}/dlna/stream?path={HttpUtility.UrlEncode(file.Replace($"{dlna_path}/", ""))}",
+                    uri = $"{host}/dlna/stream?path={HttpUtility.UrlEncode(Path.GetRelativePath(dlna_path, file).Replace(Path.DirectorySeparatorChar, '/'))}",
                     img = img,
                     preview = getPreview(CrypTo.md5(name)),
                     subtitles = new List<Subtitle>(),
-                    path = file.Replace($"{dlna_path}/", ""),
+                    path = Path.GetRelativePath(dlna_path, file).Replace(Path.DirectorySeparatorChar, '/'),
                     length = fileinfo.Length,
                     creationTime = fileinfo.CreationTime,
                     s = getSeason(name),
@@ -575,7 +591,7 @@ namespace DLNA.Controllers
                 #region subtitles
                 foreach (string subfile in subtitles)
                 {
-                    if (subfile.Contains(Path.GetFileNameWithoutExtension(file)))
+                    if (Path.GetFileNameWithoutExtension(subfile).StartsWith(Path.GetFileNameWithoutExtension(file), StringComparison.OrdinalIgnoreCase))
                     {
                         dlnaModel.subtitles.Add(new Subtitle()
                         {
@@ -639,34 +655,101 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable)
                 return Json(new { });
 
-            string contentType = "application/octet-stream";
+            if (!TryResolveInsideDlna(path, out string fullPath))
+                return NotFound();
 
-            if (path.EndsWith(".jpg"))
-                contentType = "image/jpeg";
+            if (!IO.File.Exists(fullPath))
+                return NotFound();
 
-            return File(IO.File.OpenRead($"{dlna_path}/{path}"), contentType, true);
+            return PhysicalFile(fullPath, GetContentTypeByExtension(fullPath), enableRangeProcessing: true);
+        }
+
+        static bool TryResolveInsideDlna(string path, out string fullPath)
+        {
+            fullPath = null;
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            try
+            {
+                string root = Path.GetFullPath(dlna_path);
+                string candidate = Path.GetFullPath(Path.Combine(root, path));
+                string rootWithSep = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+
+                if (!candidate.StartsWith(rootWithSep, StringComparison.Ordinal) && candidate != root)
+                    return false;
+
+                fullPath = candidate;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static readonly Dictionary<string, string> mimeMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            [".mkv"]  = "video/x-matroska",
+            [".mp4"]  = "video/mp4",
+            [".m4v"]  = "video/x-m4v",
+            [".mov"]  = "video/quicktime",
+            [".webm"] = "video/webm",
+            [".avi"]  = "video/x-msvideo",
+            [".ts"]   = "video/mp2t",
+            [".m2ts"] = "video/mp2t",
+            [".mts"]  = "video/mp2t",
+            [".m4s"]  = "video/iso.segment",
+            [".mpeg"] = "video/mpeg",
+            [".mpg"]  = "video/mpeg",
+            [".mp3"]  = "audio/mpeg",
+            [".m4a"]  = "audio/mp4",
+            [".aac"]  = "audio/aac",
+            [".flac"] = "audio/flac",
+            [".ogg"]  = "audio/ogg",
+            [".opus"] = "audio/ogg",
+            [".wav"]  = "audio/wav",
+            [".srt"]  = "application/x-subrip",
+            [".vtt"]  = "text/vtt",
+            [".ass"]  = "text/x-ssa",
+            [".ssa"]  = "text/x-ssa",
+            [".jpg"]  = "image/jpeg",
+            [".jpeg"] = "image/jpeg",
+            [".png"]  = "image/png",
+            [".webp"] = "image/webp",
+        };
+
+        static string GetContentTypeByExtension(string path)
+        {
+            string ext = Path.GetExtension(path);
+            return mimeMap.TryGetValue(ext, out string mime) ? mime : "application/octet-stream";
         }
         #endregion
 
         #region Delete
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/delete")]
         public ActionResult Delete(string path)
         {
             if (!AppInit.conf.dlna.enable)
                 return Content(string.Empty);
 
-            try
-            {
-                IO.File.Delete($"{dlna_path}/{path}");
-            }
-            catch { }
+            if (!TryResolveInsideDlna(path, out string fullPath))
+                return NotFound();
 
             try
             {
-                Directory.Delete($"{dlna_path}/{path}", true);
+                if (IO.File.Exists(fullPath))
+                    IO.File.Delete(fullPath);
             }
-            catch { }
+            catch (Exception ex) { Console.WriteLine($"DLNA delete file failed: {ex.Message}"); }
+
+            try
+            {
+                if (Directory.Exists(fullPath))
+                    Directory.Delete(fullPath, true);
+            }
+            catch (Exception ex) { Console.WriteLine($"DLNA delete dir failed: {ex.Message}"); }
 
             return Content(string.Empty);
         }

@@ -36,6 +36,14 @@ namespace Lampac.Controllers
                 return false;
             }
 
+            // Why: check the password BEFORE incrementing the brute-force counter so that
+            // a legitimate admin's own AJAX traffic (10+ requests per page) doesn't lock
+            // them out. Only failed attempts should count towards the cap. Mirrors the
+            // pattern in Lampac/Engine/Middlewares/Accsdb.cs.
+            if (CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
+                return true;
+
+            // Wrong password — increment brute force counter and apply backoff
             int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
             if (attempts > 10)
@@ -44,11 +52,6 @@ namespace Lampac.Controllers
                 return false;
             }
 
-            if (CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
-                return true;
-
-            // Wrong password — apply backoff (fire-and-forget; caller awaits nothing here,
-            // but the async delay runs before result is used since callers await the action).
             AdminBruteGuard.BackoffAsync(attempts).GetAwaiter().GetResult();
 
             HttpContext.Response.Cookies.Delete("passwd");

@@ -110,6 +110,19 @@ namespace Tracks.Controllers
                         (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                         return showerror ? "uri" : "{}";
 
+                    // SSRF guard: without a host allow-list /ffprobe would happily
+                    // hand an arbitrary http(s) URL (including 169.254.169.254,
+                    // intranet admin UIs, etc.) to the ffprobe subprocess.
+                    // Reject private/loopback/link-local unconditionally, and if
+                    // ffprobe.allowHosts is configured, require the host to match.
+                    if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(uri.AbsoluteUri))
+                        return showerror ? "uri" : "{}";
+
+                    var ffconf = AppInit.conf.ffprobe;
+                    if (ffconf.allowHosts != null && ffconf.allowHosts.Length > 0 &&
+                        !ffconf.allowHosts.Contains(uri.Host, System.StringComparer.OrdinalIgnoreCase))
+                        return showerror ? "host" : "{}";
+
                     var process = new System.Diagnostics.Process();
                     process.StartInfo.UseShellExecute = false;
                     process.StartInfo.RedirectStandardOutput = true;

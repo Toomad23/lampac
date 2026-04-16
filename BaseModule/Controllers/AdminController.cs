@@ -132,7 +132,12 @@ namespace Lampac.Controllers
                 if (!TryAuthorizeAdmin(passwd, out ActionResult badresult))
                     return badresult;
 
-                HttpContext.Response.Cookies.Append("passwd", passwd);
+                HttpContext.Response.Cookies.Append("passwd", passwd, new Microsoft.AspNetCore.Http.CookieOptions
+                {
+                    HttpOnly = true,
+                    SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict,
+                    Path = "/admin"
+                });
                 return renderAdmin();
             }
         }

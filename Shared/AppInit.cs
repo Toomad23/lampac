@@ -201,7 +201,7 @@ namespace Shared
                 long utc = DateTime.UtcNow.ToFileTimeUtc();
                 foreach (string line in File.ReadAllLines("merchant/users.txt"))
                 {
-                    if (string.IsNullOrWhiteSpace(line) && !line.Contains("@"))
+                    if (string.IsNullOrWhiteSpace(line) || !line.Contains("@"))
                         continue;
 
                     var data = line.Split(',');

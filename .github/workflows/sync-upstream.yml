@@ -46,9 +46,8 @@ jobs:
           if ! git merge --no-edit upstream/main; then
             echo "MERGE_CONFLICT=true" >> "$GITHUB_ENV"
             git merge --abort || true
-            git checkout -B "$BRANCH"
-            git merge --no-commit --strategy=ours upstream/main || true
-            git commit -am "sync: upstream $DATE (conflicts — manual resolution needed)" || true
+            # Create branch with a marker commit instead of silently discarding upstream
+            git commit --allow-empty -m "sync: upstream $DATE (conflicts — manual merge required)"
           fi
           git push origin "$BRANCH" --force
           echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"

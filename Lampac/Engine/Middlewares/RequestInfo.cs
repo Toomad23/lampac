@@ -46,7 +46,7 @@ namespace Lampac.Engine.Middlewares
 
             bool IsLocalRequest = false;
             string cf_country = null;
-            string clientIp = httpContext.Connection.RemoteIpAddress.ToString();
+            string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "0.0.0.0";
             bool IsLocalIp = Shared.Engine.Utilities.IPNetwork.IsLocalIp(clientIp);
 
             if (httpContext.Request.Headers.TryGetValue("localrequest", out StringValues _localpasswd) && _localpasswd.Count > 0)

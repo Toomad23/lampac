@@ -18,8 +18,17 @@ namespace Shared.Engine
         static readonly ConcurrentDictionary<string, ProxyLinkModel> links = new();
 
         // HMAC-SHA256 key derived from rootPasswd — prevents forging non-AES proxy link IDs.
-        static readonly byte[] proxyLinkKey = SHA256.HashData(
-            Encoding.UTF8.GetBytes((AppInit.rootPasswd ?? "fallback") + "|proxylink"));
+        // Lazy-initialized because rootPasswd is set in Program.Run(), after static constructors.
+        static volatile byte[] _proxyLinkKey;
+        static byte[] proxyLinkKey
+        {
+            get
+            {
+                if (_proxyLinkKey == null)
+                    _proxyLinkKey = SHA256.HashData(Encoding.UTF8.GetBytes((AppInit.rootPasswd ?? "fallback") + "|proxylink"));
+                return _proxyLinkKey;
+            }
+        }
 
         static string HmacId(string uri, string reqip)
         {

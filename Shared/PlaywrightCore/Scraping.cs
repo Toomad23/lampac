@@ -39,30 +39,48 @@ namespace Shared.PlaywrightCore
                     proxyServer.BeforeRequest += Request;
                     proxyServer.BeforeResponse += Response;
 
-                    if (!File.Exists("cache/titanium.pfx"))
+                    // A pfx without a side-car key file means it was generated with the old
+                    // hardcoded password shared across every Lampac install — regenerate to
+                    // limit cross-install blast radius if one .pfx ever leaks.
+                    bool needGenerate = !File.Exists("cache/titanium.pfx") || !File.Exists("cache/titanium.pfx.key");
+
+                    if (needGenerate)
                     {
-                        // Генерируем корневой сертификат (если еще не создан)
+                        byte[] passBytes = new byte[24];
+                        System.Security.Cryptography.RandomNumberGenerator.Fill(passBytes);
+                        string pfxPassword = Convert.ToBase64String(passBytes);
+
+                        Directory.CreateDirectory("cache");
+                        File.WriteAllText("cache/titanium.pfx.key", pfxPassword);
+                        TryRestrictToOwner("cache/titanium.pfx.key");
+
                         if (proxyServer.CertificateManager.RootCertificate == null)
                             proxyServer.CertificateManager.CreateRootCertificate();
 
-                        // Получаем корневой сертификат
                         X509Certificate2 rootCert = proxyServer.CertificateManager.RootCertificate;
 
-                        // Сохраняем в PFX-файл (с паролем)
-                        byte[] certBytes = rootCert.Export(X509ContentType.Pkcs12, "35sd85454gfd");
+                        byte[] certBytes = rootCert.Export(X509ContentType.Pkcs12, pfxPassword);
                         File.WriteAllBytes("cache/titanium.pfx", certBytes);
+                        TryRestrictToOwner("cache/titanium.pfx");
 
                         certBytes = proxyServer.CertificateManager.RootCertificate.Export(X509ContentType.Cert);
                         File.WriteAllBytes("cache/titanium.crt", certBytes);
                     }
 
+                    string loadPassword = File.ReadAllText("cache/titanium.pfx.key").Trim();
+
+                    // NOTE: installing this CA into the system trust store gives any process
+                    // that reads cache/titanium.pfx the ability to MITM every HTTPS request on
+                    // the host. The per-install random password above keeps the blast radius
+                    // to a single host; the .pfx and .pfx.key files should be backed up like
+                    // any other secret material.
                     if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !File.Exists("/usr/local/share/ca-certificates/lampac_titanium.crt"))
                     {
                         File.Copy("cache/titanium.crt", "/usr/local/share/ca-certificates/lampac_titanium.crt", true);
                         _ = Bash.Run("update-ca-certificates");
                     }
 
-                    proxyServer.CertificateManager.LoadRootCertificate("cache/titanium.pfx", "35sd85454gfd");
+                    proxyServer.CertificateManager.LoadRootCertificate("cache/titanium.pfx", loadPassword);
                     proxyServer.ServerCertificateValidationCallback += OnCertificateValidation;
 
                     explicitEndPoint = new ExplicitProxyEndPoint(System.Net.IPAddress.Loopback, 0, true);
@@ -296,6 +314,19 @@ namespace Shared.PlaywrightCore
         {
             e.IsValid = true;
             return Task.CompletedTask;
+        }
+
+        // Best-effort 0600 on Unix-like hosts. Windows NTFS ACLs are left to the admin.
+        private static void TryRestrictToOwner(string path)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                return;
+
+            try
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            catch { }
         }
     }
 }

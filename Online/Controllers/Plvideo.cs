@@ -65,7 +65,7 @@ namespace Online.Controllers
         [Route("lite/plvideo/movie")]
         async public ValueTask<ActionResult> Movie(string linkid)
         {
-            if (string.IsNullOrEmpty(linkid))
+            if (string.IsNullOrEmpty(linkid) || !System.Text.RegularExpressions.Regex.IsMatch(linkid, @"^[A-Za-z0-9_\-]+$"))
                 return OnError();
 
             if (await IsRequestBlocked(rch: true))

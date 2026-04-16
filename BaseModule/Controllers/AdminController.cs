@@ -44,7 +44,7 @@ namespace Lampac.Controllers
                 return false;
             }
 
-            if (AppInit.rootPasswd == passwd)
+            if (CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
                 return true;
 
             // Wrong password — apply backoff (fire-and-forget; caller awaits nothing here,
@@ -382,7 +382,7 @@ namespace Lampac.Controllers
 
 			if (IO.File.Exists("module/manifest.json"))
 			{
-                if (HttpContext.Request.Cookies.TryGetValue("passwd", out string passwd) && passwd == AppInit.rootPasswd)
+                if (HttpContext.Request.Cookies.TryGetValue("passwd", out string passwd) && CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
                 {
                     isEditManifest = true;
                 }

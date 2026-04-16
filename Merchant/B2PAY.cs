@@ -79,7 +79,7 @@ namespace Merchant.Controllers
             JObject result = JsonConvert.DeserializeObject<JObject>(requestContent);
             string signature = CrypTo.Base64(CrypTo.md5binary($"{result.Value<string>("amount")}:{result.Value<string>("currency")}:{result.Value<string>("gatewayAmount")}:{result.Value<string>("gatewayCurrency")}:{result.Value<string>("gatewayRate")}:{result.Value<string>("orderNumber")}:{result.Value<string>("pay_id")}:{result.Value<string>("sanitizedMask")}:{result.Value<string>("status")}:{result.Value<string>("token")}:pay:{AppInit.conf.Merchant.B2PAY.encryption_password}"));
 
-            if (result.Value<string>("sign") != signature)
+            if (!CrypTo.FixedTimeEquals(result.Value<string>("sign"), signature))
                 return StatusCode(401);
 
             string orderNumber = result.Value<string>("orderNumber");

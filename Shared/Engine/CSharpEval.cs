@@ -79,11 +79,27 @@ namespace Shared.Engine
             while (scriptOrder.TryDequeue(out _)) { }
         }
 
+        // Why (FL-15): salt the cache key with a per-install value derived from rootPasswd.
+        // Without this, an attacker who can submit script source and observe cache behavior
+        // (side-channel timing) could probe for compiled delegates across installations.
+        // Pattern mirrors Shared/Engine/ProxyLink.cs — lazy init because rootPasswd is set
+        // during Program.Run() after static constructors.
+        static volatile string _cacheSalt;
+        static string CacheSalt
+        {
+            get
+            {
+                if (_cacheSalt == null)
+                    _cacheSalt = CrypTo.md5((AppInit.rootPasswd ?? "fallback") + "|csharpeval");
+                return _cacheSalt;
+            }
+        }
+
         static string CacheKey(string cs, Type globalsType, Type returnType)
         {
             string g = globalsType?.FullName ?? "<null>";
             string r = returnType?.FullName ?? "<null>";
-            return $"{CrypTo.md5(cs)}|{g}|{r}";
+            return $"{CrypTo.md5(cs)}|{g}|{r}|{CacheSalt}";
         }
 
         static TDelegate GetOrAdd<TDelegate>(string key, Func<TDelegate> factory) where TDelegate : class

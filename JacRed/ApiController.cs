@@ -208,12 +208,16 @@ namespace JacRed.Controllers
                     if (search.StartsWith("kp"))
                         uri = $"&kp={search.Remove(0, 2)}";
 
-                    // Why: prefer operator-supplied Alloha token from init.conf; fall back to the shared-public token
-                    // so existing deployments keep working. Same pattern as Online/OnlineApi.cs.
-                    string allohaToken = !string.IsNullOrEmpty(AppInit.conf.Alloha?.token) ? AppInit.conf.Alloha.token : "04941a9a3ca3ac16e2b4327347bbc1";
-                    var root = await Http.Get<JObject>($"https://api.alloha.tv/?token={allohaToken}" + uri, timeoutSeconds: 10);
-                    cache.original_name = root?.Value<JObject>("data")?.Value<string>("original_name");
-                    cache.name = root?.Value<JObject>("data")?.Value<string>("name");
+                    // Why: require operator-supplied Alloha token. Removed shared-public fallback token —
+                    // unauthenticated use of someone else's quota is abuse and the token can be revoked
+                    // at any time, breaking deployments silently. When unset, skip enrichment (kp/imdb → name).
+                    string allohaToken = AppInit.conf.Alloha?.token;
+                    if (!string.IsNullOrEmpty(allohaToken))
+                    {
+                        var root = await Http.Get<JObject>($"https://api.alloha.tv/?token={allohaToken}" + uri, timeoutSeconds: 10);
+                        cache.original_name = root?.Value<JObject>("data")?.Value<string>("original_name");
+                        cache.name = root?.Value<JObject>("data")?.Value<string>("name");
+                    }
 
                     hybridCache.Set(memkey, cache, DateTime.Now.AddDays(1), inmemory: false);
                 }

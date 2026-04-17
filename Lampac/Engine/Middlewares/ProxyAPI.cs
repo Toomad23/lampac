@@ -787,8 +787,7 @@ namespace Lampac.Engine.Middlewares
                             #region cache
                             string md5key = CrypTo.md5(uriKeyFileCache);
                             string targetFile = $"cache/hls/{md5key}";
-                            var semaphore = new SemaphorManager(targetFile, context.RequestAborted);
-
+                            using var semaphore = new SemaphorManager(targetFile, context.RequestAborted);
                             try
                             {
                                 await semaphore.WaitAsync().ConfigureAwait(false);
@@ -819,10 +818,6 @@ namespace Lampac.Engine.Middlewares
                             {
                                 File.Delete(targetFile);
                                 throw;
-                            }
-                            finally
-                            {
-                                semaphore.Release();
                             }
                             #endregion
                         }

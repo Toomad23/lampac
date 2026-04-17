@@ -529,17 +529,9 @@ namespace Shared
         // the refcount via AcquireEntry; the WaitAsync here actually enforces mutual exclusion.
         public async Task<ActionResult> SemaphoreResult(string key, Func<(string key, SemaphorManager semaphore), Task<ActionResult>> func)
         {
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(30));
-
-            try
-            {
-                await semaphore.WaitAsync();
-                return await func.Invoke((key, semaphore));
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(30));
+            await semaphore.WaitAsync();
+            return await func.Invoke((key, semaphore));
         }
 
         public Task<ActionResult> InvkSemaphore(string key, Func<string, Task<ActionResult>> func)

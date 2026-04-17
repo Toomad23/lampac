@@ -180,19 +180,17 @@ namespace Lampac.Engine.Middlewares
                 }
                 #endregion
 
-                var semaphore = cacheimg ?  new SemaphorManager(outFile, ctsHttp.Token) : null;
+                using var semaphore = cacheimg ? new SemaphorManager(outFile, ctsHttp.Token) : null;
 
-                try
+                string memKeyErrorDownload = $"ProxyImg:ErrorDownload:{href}";
+                if (memoryCache.TryGetValue(memKeyErrorDownload, out _))
                 {
-                    string memKeyErrorDownload = $"ProxyImg:ErrorDownload:{href}";
-                    if (memoryCache.TryGetValue(memKeyErrorDownload, out _))
-                    {
-                        httpContext.Response.Redirect(href);
-                        return;
-                    }
+                    httpContext.Response.Redirect(href);
+                    return;
+                }
 
-                    if (semaphore != null)
-                        await semaphore.WaitAsync().ConfigureAwait(false);
+                if (semaphore != null)
+                    await semaphore.WaitAsync().ConfigureAwait(false);
 
                     #region cacheFiles
                     if (cacheimg)
@@ -422,13 +420,7 @@ namespace Lampac.Engine.Middlewares
                         #endregion
                     }
                 }
-                finally
-                {
-                    if (semaphore != null)
-                        semaphore.Release();
-                }
             }
-        }
 
 
         #region Download

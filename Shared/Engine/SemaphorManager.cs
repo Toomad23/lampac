@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace Shared.Engine
 {
-    public class SemaphorManager
+    public class SemaphorManager : IDisposable
     {
         #region static
         private static readonly ConcurrentDictionary<string, SemaphoreEntry> _semaphoreLocks = new();
@@ -142,6 +142,12 @@ namespace Shared.Engine
             if (Interlocked.Exchange(ref checkoutReleased, 1) == 0)
                 semaphore.Checkin();
         }
+
+        // Why: enables `using var sm = new SemaphorManager(key); await sm.WaitAsync(); ...`
+        // in place of the verbose try/finally { sm.Release(); } pattern. Dispose delegates to
+        // Release, which is idempotent (releaseLock guard) and decrements the checkout counter
+        // even when WaitAsync was skipped — matching the existing semantics.
+        public void Dispose() => Release();
 
 
         async public Task Invoke(Action action)

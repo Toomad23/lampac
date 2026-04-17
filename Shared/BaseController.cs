@@ -455,103 +455,89 @@ namespace Shared
         #region InvokeBaseCache
         async public ValueTask<T> InvokeBaseCache<T>(string key, TimeSpan time, RchClient rch, Func<Task<T>> onget, ProxyManager proxyManager = null, bool? memory = null)
         {
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
 
-            try
+            if (rch?.enable != true)
+                await semaphore.WaitAsync();
+
+            if (hybridCache.TryGetValue(key, out T val, memory))
             {
-                if (rch?.enable != true)
-                    await semaphore.WaitAsync();
-
-                if (hybridCache.TryGetValue(key, out T val, memory))
-                {
-                    HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
-                    return val;
-                }
-
-                HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
-
-                val = await onget.Invoke();
-                if (val == null || val.Equals(default(T)))
-                    return default;
-
-                if (rch?.enable != true)
-                    proxyManager?.Success();
-
-                hybridCache.Set(key, val, time, memory);
+                HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
                 return val;
             }
-            finally
-            {
-                semaphore.Release();
-            }
+
+            HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
+
+            val = await onget.Invoke();
+            if (val == null || val.Equals(default(T)))
+                return default;
+
+            if (rch?.enable != true)
+                proxyManager?.Success();
+
+            hybridCache.Set(key, val, time, memory);
+            return val;
         }
         #endregion
 
         #region InvokeBaseCacheResult
         async public ValueTask<CacheResult<T>> InvokeBaseCacheResult<T>(string key, TimeSpan time, RchClient rch, ProxyManager proxyManager, Func<CacheResult<T>, Task<CacheResult<T>>> onget, bool? memory = null)
         {
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
 
-            try
+            if (rch?.enable != true)
+                await semaphore.WaitAsync();
+
+            var entry = hybridCache.Entry<T>(key, memory);
+
+            if (entry.success)
             {
-                if (rch?.enable != true)
-                    await semaphore.WaitAsync();
+                HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
 
-                var entry = hybridCache.Entry<T>(key, memory);
-
-                if (entry.success)
+                return new CacheResult<T>()
                 {
-                    HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
-
-                    return new CacheResult<T>() 
-                    { 
-                        IsSuccess = true, 
-                        ISingleCache = entry.singleCache,
-                        Value = entry.value
-                    };
-                }
-
-                HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
-
-                var val = await onget.Invoke(new CacheResult<T>());
-
-                if (val == null || val.Value == null)
-                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "null" };
-
-                if (!val.IsSuccess)
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return val;
-                }
-
-                if (val.Value.Equals(default(T)))
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return val;
-                }
-
-                if (typeof(T) == typeof(string) && string.IsNullOrWhiteSpace(val.ToString()))
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "empty" };
-                }
-
-                if (rch?.enable != true)
-                    proxyManager?.Success();
-
-                hybridCache.Set(key, val.Value, time, memory);
-                return new CacheResult<T>() { IsSuccess = true, Value = val.Value };
+                    IsSuccess = true,
+                    ISingleCache = entry.singleCache,
+                    Value = entry.value
+                };
             }
-            finally
+
+            HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
+
+            var val = await onget.Invoke(new CacheResult<T>());
+
+            if (val == null || val.Value == null)
+                return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "null" };
+
+            if (!val.IsSuccess)
             {
-                semaphore.Release();
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return val;
             }
+
+            if (val.Value.Equals(default(T)))
+            {
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return val;
+            }
+
+            if (typeof(T) == typeof(string) && string.IsNullOrWhiteSpace(val.ToString()))
+            {
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "empty" };
+            }
+
+            if (rch?.enable != true)
+                proxyManager?.Success();
+
+            hybridCache.Set(key, val.Value, time, memory);
+            return new CacheResult<T>() { IsSuccess = true, Value = val.Value };
         }
         #endregion
 
@@ -561,17 +547,9 @@ namespace Shared
             if (rch?.enable == true)
                 return await func.Invoke();
 
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
-
-            try
-            {
-                await semaphore.WaitAsync();
-                return await func.Invoke();
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            await semaphore.WaitAsync();
+            return await func.Invoke();
         }
         #endregion
 

@@ -91,22 +91,16 @@ namespace Lampac.Controllers
             }
             else
             {
-                var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
-
+                using var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
                 try
                 {
                     await semaphore.WaitAsync();
-
                     data = await IO.File.ReadAllTextAsync(outFile);
                 }
                 catch
                 {
                     HttpContext.Response.StatusCode = 503;
                     return ContentTo("{\"success\": false, \"msg\": \"fileLock\"}");
-                }
-                finally
-                {
-                    semaphore.Release();
                 }
             }
 
@@ -148,12 +142,10 @@ namespace Lampac.Controllers
                 }
                 else
                 {
-                    var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
-
+                    using var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
                     try
                     {
                         await semaphore.WaitAsync();
-
                         using (var fileStream = new FileStream(outFile, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
                         {
                             await memoryStream.CopyToAsync(fileStream, PoolInvk.bufferSize);
@@ -163,10 +155,6 @@ namespace Lampac.Controllers
                     {
                         HttpContext.Response.StatusCode = 503;
                         return ContentTo("{\"success\": false, \"msg\": \"fileLock\"}");
-                    }
-                    finally
-                    {
-                        semaphore.Release();
                     }
                 }
             }
@@ -226,22 +214,16 @@ namespace Lampac.Controllers
             }
             else
             {
-                var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
-
+                using var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
                 try
                 {
                     await semaphore.WaitAsync();
-
                     data = await IO.File.ReadAllTextAsync(outFile);
                 }
                 catch
                 {
                     HttpContext.Response.StatusCode = 503;
                     return ContentTo("{\"success\": false, \"msg\": \"fileLock\"}");
-                }
-                finally
-                {
-                    semaphore.Release();
                 }
             }
 
@@ -283,12 +265,10 @@ namespace Lampac.Controllers
                 }
                 else
                 {
-                    var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
-
+                    using var semaphore = new SemaphorManager(outFile, TimeSpan.FromSeconds(20));
                     try
                     {
                         await semaphore.WaitAsync();
-
                         using (var fileStream = new FileStream(outFile, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
                             await memoryStream.CopyToAsync(fileStream, PoolInvk.bufferSize);
                     }
@@ -296,10 +276,6 @@ namespace Lampac.Controllers
                     {
                         HttpContext.Response.StatusCode = 503;
                         return ContentTo("{\"success\": false, \"msg\": \"fileLock\"}");
-                    }
-                    finally
-                    {
-                        semaphore.Release();
                     }
                 }
             }

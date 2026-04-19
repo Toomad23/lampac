@@ -90,10 +90,31 @@ namespace Lampac.Engine.Middlewares
             #region jacred
             if (rexJac.IsMatch(httpContext.Request.Path.Value))
             {
-                if (!string.IsNullOrEmpty(AppInit.conf.apikey))
+                // HIGH-2: fail-closed JacRed apikey check for non-local traffic.
+                //   (a) `apikey != Query["apikey"]` coerced StringValues; duplicate apikey=X&apikey=Y
+                //       joined to "X,Y" and never matched — effectively open. Pull the first value.
+                //   (b) IsNullOrEmpty(apikey) previously SKIPPED the check; treat an unconfigured
+                //       apikey as "deny external access" rather than "wide open".
+                //   (c) Use FixedTimeEquals to kill the byte-at-a-time timing oracle.
+                string configured = AppInit.conf.apikey;
+                if (string.IsNullOrEmpty(configured))
                 {
-                    if (AppInit.conf.apikey != httpContext.Request.Query["apikey"])
-                        return Task.CompletedTask;
+                    httpContext.Response.StatusCode = 401;
+                    return Task.CompletedTask;
+                }
+
+                var supplied = httpContext.Request.Query["apikey"];
+                if (supplied.Count != 1)
+                {
+                    // No apikey, or duplicated values — reject. Don't let merging produce surprises.
+                    httpContext.Response.StatusCode = 401;
+                    return Task.CompletedTask;
+                }
+
+                if (!Shared.Engine.CrypTo.FixedTimeEquals(configured, supplied[0]))
+                {
+                    httpContext.Response.StatusCode = 401;
+                    return Task.CompletedTask;
                 }
 
                 return _next(httpContext);

@@ -53,7 +53,14 @@ namespace Merchant.Controllers
             };
 
             if (memoryCache.TryGetValue($"cryptocloud:{email}", out string pay_url))
+            {
+                // HIGH-8: re-verify cached pay_url host before redirect — a cache entry poisoned
+                // (or left over from a compromised PSP response) must not silently send users
+                // to a phishing domain.
+                if (!IsAllowedCryptoCloudRedirect(pay_url))
+                    return Content("pay_url host not allowed");
                 return Redirect(pay_url);
+            }
 
             // Why: L-16 — PSP outbound must go through StrictHttpClient (default TLS validation),
             // not Shared.Engine.Http (which disables certificate validation globally).
@@ -82,6 +89,12 @@ namespace Merchant.Controllers
             if (string.IsNullOrWhiteSpace(pay_url))
                 return Content("pay_url == null");
 
+            // HIGH-8: verify the pay_url host matches a CryptoCloud-owned domain before 302-ing
+            // users. A MitM'd or compromised PSP response could otherwise walk the user onto
+            // a phishing page "attached" to the legitimate checkout flow.
+            if (!IsAllowedCryptoCloudRedirect(pay_url))
+                return Content("pay_url host not allowed");
+
             memoryCache.Set($"cryptocloud:{email}", pay_url, DateTime.Now.AddHours(2));
 
             string invoicePath = $"merchant/invoice/cryptocloud/{root.Value<string>("invoice_id")}";
@@ -92,6 +105,34 @@ namespace Merchant.Controllers
             TryRestrictToOwner(invoicePath);
 
             return Redirect(pay_url);
+        }
+
+
+        // HIGH-8: host allow-list for CryptoCloud redirects. CryptoCloud production checkout lives
+        // on pay.cryptocloud.plus; api/app subdomains are included in case they are returned for
+        // legacy flows. Subdomain match is enforced via case-insensitive suffix check.
+        static readonly string[] _cryptoCloudHosts = new[]
+        {
+            "cryptocloud.plus",
+            "pay.cryptocloud.plus",
+            "app.cryptocloud.plus"
+        };
+
+        static bool IsAllowedCryptoCloudRedirect(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                return false;
+            if (parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+            string host = parsed.Host;
+            foreach (string allowed in _cryptoCloudHosts)
+            {
+                if (host.Equals(allowed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (host.EndsWith("." + allowed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
 

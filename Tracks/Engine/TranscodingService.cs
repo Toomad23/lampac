@@ -427,6 +427,19 @@ namespace Tracks.Engine
                     return false;
                 }
             }
+            else
+            {
+                // Why (HIGH-1): fail-closed when operator didn't configure an allowHosts allow-list.
+                // The previous behaviour (empty list => skip all checks) let an unauthenticated
+                // attacker pull arbitrary URLs (e.g. http://169.254.169.254/latest/meta-data/)
+                // through /transcoding/start.m3u8?src=... Route the URL through SsrfGuard so
+                // private/loopback/link-local targets are rejected even without explicit config.
+                if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(uri.AbsoluteUri))
+                {
+                    error = "Source host is not allowed";
+                    return false;
+                }
+            }
 
             return true;
         }

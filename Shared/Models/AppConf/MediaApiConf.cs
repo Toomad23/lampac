@@ -3,5 +3,7 @@
     public class MediaApiConf
     {
         public string[] tokens { get; set; } = Array.Empty<string>();
+
+        public string[] hosts { get; set; } = Array.Empty<string>();
     }
 }

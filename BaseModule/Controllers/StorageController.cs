@@ -196,7 +196,10 @@ namespace Lampac.Controllers
             if (!AppInit.conf.storage.enable)
                 return ContentTo("{\"success\": false, \"msg\": \"disabled\"}");
 
-            string outFile = StorageManager.GetFilePath("temp", false, key);
+            if (string.IsNullOrWhiteSpace(key) || key.Contains('/') || key.Contains('\\') || key.Contains(".."))
+                return ContentTo("{\"success\": false, \"msg\": \"key\"}");
+
+            string outFile = StorageManager.GetFilePath("temp", false, requestInfo, key);
             if (outFile == null || !IO.File.Exists(outFile))
                 return ContentTo("{\"success\": false, \"msg\": \"outFile\"}");
 
@@ -242,7 +245,10 @@ namespace Lampac.Controllers
             if (HttpContext.Request.ContentLength > AppInit.conf.storage.max_size)
                 return ContentTo("{\"success\": false, \"msg\": \"max_size\"}");
 
-            string outFile = StorageManager.GetFilePath("temp", true, key);
+            if (string.IsNullOrWhiteSpace(key) || key.Contains('/') || key.Contains('\\') || key.Contains(".."))
+                return ContentTo("{\"success\": false, \"msg\": \"key\"}");
+
+            string outFile = StorageManager.GetFilePath("temp", true, requestInfo, key);
             if (outFile == null)
                 return ContentTo("{\"success\": false, \"msg\": \"outFile\"}");
 

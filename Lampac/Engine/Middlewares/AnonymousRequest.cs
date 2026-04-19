@@ -15,7 +15,6 @@ namespace Lampac.Engine.Middlewares
         }
 
         static readonly Regex rexProxy = new Regex("^/(proxy-dash|cub|ts|kit|bind)(/|$)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        static readonly Regex rexJs = new Regex("^/[a-zA-Z\\-]+\\.js", RegexOptions.Compiled);
 
         public Task Invoke(HttpContext httpContext)
         {
@@ -32,9 +31,6 @@ namespace Lampac.Engine.Middlewares
                 requestInfo.IsAnonymousRequest = true;
 
             if (rexProxy.IsMatch(httpContext.Request.Path.Value))
-                requestInfo.IsAnonymousRequest = true;
-
-            if (rexJs.IsMatch(httpContext.Request.Path.Value))
                 requestInfo.IsAnonymousRequest = true;
 
             return _next(httpContext);

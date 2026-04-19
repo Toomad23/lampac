@@ -76,7 +76,7 @@ namespace Tracks.Engine
 
         public ICollection<TranscodingJob> Jobs => _jobs.Values;
 
-        async public Task<(TranscodingJob job, string error)> Start(TranscodingStartRequest request)
+        async public Task<(TranscodingJob job, string error)> Start(TranscodingStartRequest request, string ownerUid = null)
         {
             var config = GetConfig();
             if (!config.enable)
@@ -139,7 +139,7 @@ namespace Tracks.Engine
                 return (null!, $"Failed to start ffmpeg: {ex.Message}");
             }
 
-            var job = new TranscodingJob(id, streamId, outputDir, process, context);
+            var job = new TranscodingJob(id, streamId, outputDir, process, context, ownerUid);
             if (!_jobs.TryAdd(id, job))
             {
                 try
@@ -186,12 +186,44 @@ namespace Tracks.Engine
             return true;
         }
 
-        public async Task<(bool success, string error)> SeekAsync(string streamId, int seconds, int? startSegment = null)
+        // Returns true only when the job exists AND (the job has no owner recorded
+        // OR the supplied uid matches). Callers that must enforce ownership should
+        // treat a false return exactly like "not found" (HTTP 404) to avoid
+        // leaking existence of someone else's streamId.
+        public bool TryResolveOwnedJob(string streamId, string ownerUid, out TranscodingJob job)
+        {
+            if (!TryResolveJob(streamId, out job))
+                return false;
+
+            if (string.IsNullOrEmpty(job.OwnerUid))
+                return true; // legacy/anonymous-started jobs: no ownership to enforce
+
+            if (string.IsNullOrEmpty(ownerUid))
+            {
+                job = null!;
+                return false;
+            }
+
+            if (!string.Equals(job.OwnerUid, ownerUid, StringComparison.Ordinal))
+            {
+                job = null!;
+                return false;
+            }
+
+            return true;
+        }
+
+        public async Task<(bool success, string error)> SeekAsync(string streamId, int seconds, int? startSegment = null, string ownerUid = null, bool enforceOwner = false)
         {
             if (seconds < 0)
                 return (false, "ss must be greater or equal 0");
 
-            if (!TryResolveJob(streamId, out var job))
+            TranscodingJob job;
+            bool resolved = enforceOwner
+                ? TryResolveOwnedJob(streamId, ownerUid, out job)
+                : TryResolveJob(streamId, out job);
+
+            if (!resolved)
                 return (false, "Job not found");
 
             var config = GetConfig();
@@ -229,7 +261,7 @@ namespace Tracks.Engine
                 return (false, $"Failed to start ffmpeg: {ex.Message}");
             }
 
-            var newJob = new TranscodingJob(job.Id, job.StreamId, job.OutputDirectory, process, newContext);
+            var newJob = new TranscodingJob(job.Id, job.StreamId, job.OutputDirectory, process, newContext, job.OwnerUid);
 
             if (_jobs.AddOrUpdate(job.Id, newJob, (k, v) => newJob) == null)
             {
@@ -259,6 +291,15 @@ namespace Tracks.Engine
         public async Task<bool> StopAsync(string streamId)
         {
             if (!TryResolveJob(streamId, out var job))
+                return false;
+
+            await StopJobAsync(job);
+            return true;
+        }
+
+        public async Task<bool> StopAsync(string streamId, string ownerUid)
+        {
+            if (!TryResolveOwnedJob(streamId, ownerUid, out var job))
                 return false;
 
             await StopJobAsync(job);

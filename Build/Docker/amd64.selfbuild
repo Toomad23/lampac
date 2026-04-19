@@ -60,7 +60,7 @@ RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnet
 # built ones.  dotnet publish doesn't produce wwwroot/basemod/plugins
 # either, so we still need the upstream archive for those.
 RUN curl -fSL -o /tmp/publish.zip https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip \
- && unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* plugins/* -d /home/ \
+ && (unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* plugins/* -d /home/ || [ $? -eq 1 ]) \
  && mkdir -p runtimes/references \
  && rm /tmp/publish.zip
 

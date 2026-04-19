@@ -29,6 +29,11 @@ namespace Shared.Engine.Online
 
         static readonly ConcurrentDictionary<long, string> basereferer = new();
 
+        // Compiled regex — lifted from per-request allocation
+        static readonly Regex _translatorIdMovieRegex  = new Regex(@"<[^>]+ data-translator_id=""([0-9]+)""([^>]+)?>(?<voice>[^<]+)(<img title=""(?<imgname>[^""]+)"" [^>]+/>)?", RegexOptions.Compiled);
+        static readonly Regex _translatorIdSerialRegex = new Regex(@"<[a-z]+ [^>]+ data-translator_id=""(?<translator>[0-9]+)""([^>]+)?>(?<name>[^<]+)(<img title=""(?<imgname>[^""]+)"" [^>]+/>)?", RegexOptions.Compiled);
+        static readonly Regex _seasonTabRegex          = new Regex(@"data-tab_id=""(?<season>[0-9]+)""([^>]+)?>(?<name>[^<]+)</[a-z]+>", RegexOptions.Compiled);
+
         public RezkaInvoke(string host, string route, RezkaSettings init, bool safety, List<HeadersModel> defaultHeaders, HttpHydra httpHydra, Func<string, string> onstreamfile, Action requesterror = null)
         {
             this.host = host != null ? $"{host}/" : null;
@@ -330,7 +335,7 @@ namespace Shared.Engine.Online
             if (!result.content.Contains("data-season_id="))
             {
                 #region Фильм
-                var match = new Regex("<[^>]+ data-translator_id=\"([0-9]+)\"([^>]+)?>(?<voice>[^<]+)(<img title=\"(?<imgname>[^\"]+)\" [^>]+/>)?").Match(result.content);
+                var match = _translatorIdMovieRegex.Match(result.content);
 
                 var mtpl = new MovieTpl(title, original_title, match.Length);
 
@@ -401,7 +406,7 @@ namespace Shared.Engine.Online
 
                 if (result.content.Contains("data-translator_id="))
                 {
-                    var match = new Regex("<[a-z]+ [^>]+ data-translator_id=\"(?<translator>[0-9]+)\"([^>]+)?>(?<name>[^<]+)(<img title=\"(?<imgname>[^\"]+)\" [^>]+/>)?").Match(result.content);
+                    var match = _translatorIdSerialRegex.Match(result.content);
                     while (match.Success)
                     {
                         if (!userprem && match.Groups[0].Value.Contains("prem_translator"))
@@ -552,7 +557,7 @@ namespace Shared.Engine.Online
                 {
                     if (result.content.Contains("data-translator_id="))
                     {
-                        var match = new Regex("<[a-z]+ [^>]+ data-translator_id=\"(?<translator>[0-9]+)\"([^>]+)?>(?<name>[^<]+)(<img title=\"(?<imgname>[^\"]+)\" [^>]+/>)?").Match(result.content);
+                        var match = _translatorIdSerialRegex.Match(result.content);
                         while (match.Success)
                         {
                             if (!userprem && match.Groups[0].Value.Contains("prem_translator"))
@@ -578,7 +583,7 @@ namespace Shared.Engine.Online
                 #region Сезоны
                 var tpl = new SeasonTpl(vtpl, root.seasons.Length);
 
-                var match = new Regex("data-tab_id=\"(?<season>[0-9]+)\"([^>]+)?>(?<name>[^<]+)</[a-z]+>").Match(root.seasons);
+                var match = _seasonTabRegex.Match(root.seasons);
                 while (match.Success)
                 {
                     string link = host + $"{route}/serial?rjson={rjson}&title={enc_title}&original_title={enc_original_title}&href={enc_href}&id={id}&t={t}&s={match.Groups["season"].Value}";

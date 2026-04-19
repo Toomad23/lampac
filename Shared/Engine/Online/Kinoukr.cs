@@ -11,6 +11,10 @@ namespace Shared.Engine.Online
 {
     public struct KinoukrInvoke
     {
+        // Compiled regex — lifted from per-request allocation
+        static readonly Regex _subtitleJsonRegex = new Regex(@"""subtitle"": ?""([^""]+)""",   RegexOptions.Compiled);
+        static readonly Regex _subtitleLinkRegex = new Regex(@"\[([^\]]+)\](https?://[^\\,]+)", RegexOptions.Compiled);
+
         #region unic
         static string ArrayList => "qwertyuioplkjhgfdsazxcvbnm";
         static string ArrayListToNumber => "1234567890";
@@ -361,11 +365,11 @@ namespace Shared.Engine.Online
 
                 #region subtitle
                 var subtitles = new SubtitleTpl();
-                string subtitle = new Regex("\"subtitle\": ?\"([^\"]+)\"").Match(result.content).Groups[1].Value;
+                string subtitle = _subtitleJsonRegex.Match(result.content).Groups[1].Value;
 
                 if (!string.IsNullOrEmpty(subtitle))
                 {
-                    var match = new Regex("\\[([^\\]]+)\\](https?://[^\\,]+)").Match(subtitle);
+                    var match = _subtitleLinkRegex.Match(subtitle);
                     while (match.Success)
                     {
                         subtitles.Append(match.Groups[1].Value, onstreamfile.Invoke(match.Groups[2].Value));
@@ -437,7 +441,7 @@ namespace Shared.Engine.Online
 
                             if (!string.IsNullOrEmpty(video.subtitle))
                             {
-                                var match = new Regex("\\[([^\\]]+)\\](https?://[^\\,]+)").Match(video.subtitle);
+                                var match = _subtitleLinkRegex.Match(video.subtitle);
                                 while (match.Success)
                                 {
                                     subtitles.Append(match.Groups[1].Value, onstreamfile.Invoke(match.Groups[2].Value));

@@ -53,8 +53,8 @@ namespace Lampac.Engine.Middlewares
                 // Do not set Allow-Credentials with "*" — browsers reject it.
             }
 
-            if (Regex.IsMatch(httpContext.Request.Path.Value, "^/(lampainit|sisi|lite|online|tmdbproxy|cubproxy|tracks|transcoding|dlna|timecode|bookmark|catalog|sync|backup|ts|invc-ws)\\.js", RegexOptions.IgnoreCase) ||
-                Regex.IsMatch(httpContext.Request.Path.Value, "^/(on/|(lite|online|sisi|timecode|bookmark|sync|tmdbproxy|dlna|ts|tracks|transcoding|backup|catalog|invc-ws)/js/)", RegexOptions.IgnoreCase))
+            if (_jsFileRegex.IsMatch(httpContext.Request.Path.Value) ||
+                _jsDirRegex.IsMatch(httpContext.Request.Path.Value))
             {
                 httpContext.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate"; // HTTP 1.1.
                 httpContext.Response.Headers["Pragma"] = "no-cache"; // HTTP 1.0.
@@ -67,6 +67,14 @@ namespace Lampac.Engine.Middlewares
             return _next(httpContext);
         }
 
+
+        static readonly Regex _jsFileRegex = new Regex(
+            @"^/(lampainit|sisi|lite|online|tmdbproxy|cubproxy|tracks|transcoding|dlna|timecode|bookmark|catalog|sync|backup|ts|invc-ws)\.js",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        static readonly Regex _jsDirRegex = new Regex(
+            @"^/(on/|(lite|online|sisi|timecode|bookmark|sync|tmdbproxy|dlna|ts|tracks|transcoding|backup|catalog|invc-ws)/js/)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         static readonly string stringAllowHeaders = "Authorization, Token, Profile, X-Kit-AesGcm, Content-Type, X-Signalr-User-Agent, X-Requested-With";
 

@@ -17,6 +17,17 @@ namespace Online.Controllers
 {
     public class OnlineApiController : BaseController
     {
+        // CJK title detection — compiled once, reused across every Events() call
+        static readonly Regex _cjkChineseRegex  = new Regex(@"[\u4E00-\u9FFF]",         RegexOptions.Compiled);
+        static readonly Regex _cjkJapaneseRegex = new Regex(@"[\u3040-\u30FF\uFF66-\uFF9F]", RegexOptions.Compiled);
+        static readonly Regex _cjkKoreanRegex   = new Regex(@"[\uAC00-\uD7AF]",         RegexOptions.Compiled);
+
+        // quality comment tag — compiled once, reused per checkSearch call
+        static readonly Regex _qualityTagRegex  = new Regex(@"<!--q:([^>]+)-->",        RegexOptions.Compiled);
+
+        // quality markers — allocated once
+        static readonly string[] _qualityMarkers = { "2160", "1080", "720", "480", "360" };
+
         #region online.js
         [HttpGet]
         [AllowAnonymous]
@@ -591,13 +602,13 @@ namespace Online.Controllers
             string json = null;
             JsonResult error(string msg) => Json(new { accsdb = true, ready = true, online = new string[] { }, msg });
 
-            List<(string code, int index, bool work)> _links = null;
+            (string code, int index, bool work)[] _links = null;
             if (memoryCache.TryGetValue(memkey, out List<(string code, int index, bool work)> links))
-                _links = links.ToList();
+                _links = links.ToArray(); // array snapshot is cheaper than List<T> wrapper
 
             if (_links != null && _links.Count(i => i.code != null) > 0)
             {
-                bool ready = _links.Count == _links.Count(i => i.code != null);
+                bool ready = _links.Length == _links.Count(i => i.code != null);
                 string online = string.Join(",", _links.Where(i => i.code != null).OrderByDescending(i => i.work).ThenBy(i => i.index).Select(i => i.code));
 
                 if (ready && !online.Contains("\"show\":true"))
@@ -608,7 +619,15 @@ namespace Online.Controllers
                     return error($"Не удалось найти онлайн для {(serial == 1 ? "сериала" : "фильма")}");
                 }
 
-                json = "{" + $"\"ready\":{ready.ToString().ToLower()},\"tasks\":{_links.Count},\"online\":[{online.Replace("{localhost}", host)}]" + "}";
+                var sb = new StringBuilder(256);
+                sb.Append("{\"ready\":");
+                sb.Append(ready.ToString().ToLower());
+                sb.Append(",\"tasks\":");
+                sb.Append(_links.Length);
+                sb.Append(",\"online\":[");
+                sb.Append(online.Replace("{localhost}", host));
+                sb.Append("]}");
+                json = sb.ToString();
             }
 
             return Content(json ?? "{\"ready\":false,\"tasks\":0,\"online\":[]}", contentType: "application/javascript; charset=utf-8");
@@ -629,11 +648,7 @@ namespace Online.Controllers
             {
                 if (long.TryParse(id, out long tmdbid) && tmdbid > 0)
                 {
-                    Regex chineseRegex = new Regex("[\u4E00-\u9FFF]"); // Диапазон для китайских иероглифов
-                    Regex japaneseRegex = new Regex("[\u3040-\u30FF\uFF66-\uFF9F]"); // Хирагана, катакана и специальные символы
-                    Regex koreanRegex = new Regex("[\uAC00-\uD7AF]"); // Диапазон для корейских хангыльских символов
-
-                    if (chineseRegex.IsMatch(title) || japaneseRegex.IsMatch(title) || koreanRegex.IsMatch(title))
+                    if (_cjkChineseRegex.IsMatch(title) || _cjkJapaneseRegex.IsMatch(title) || _cjkKoreanRegex.IsMatch(title))
                     {
                         var header = HeadersModel.Init(("localrequest", AppInit.rootPasswd));
                         var result = await Http.Get<JObject>($"http://{AppInit.conf.listen.localhost}:{AppInit.conf.listen.port}/tmdb/api/3/{(serial == 1 ? "tv" : "movie")}/{tmdbid}?api_key={AppInit.conf.tmdb.api_key}&language=en", timeoutSeconds: 4, headers: header);
@@ -1160,8 +1175,23 @@ namespace Online.Controllers
             }
             #endregion
 
-            string online_result = string.Join(",", online.OrderBy(i => i.index).Select(i => "{\"name\":\"" + i.name + "\",\"url\":\"" + i.url + "\",\"balanser\":\"" + i.plugin + "\"}"));
-            return ContentTo($"[{online_result.Replace("{localhost}", host)}]");
+            var sbResult = new StringBuilder(1024);
+            sbResult.Append('[');
+            bool firstEntry = true;
+            foreach (var entry in online.OrderBy(i => i.index))
+            {
+                if (!firstEntry) sbResult.Append(',');
+                firstEntry = false;
+                sbResult.Append("{\"name\":\"");
+                sbResult.Append(entry.name);
+                sbResult.Append("\",\"url\":\"");
+                sbResult.Append(entry.url?.Replace("{localhost}", host));
+                sbResult.Append("\",\"balanser\":\"");
+                sbResult.Append(entry.plugin);
+                sbResult.Append("\"}");
+            }
+            sbResult.Append(']');
+            return ContentTo(sbResult.ToString());
         }
         #endregion
 
@@ -1192,11 +1222,11 @@ namespace Online.Controllers
                 #region определение качества
                 if (work && life)
                 {
-                    foreach (string q in new string[] { "2160", "1080", "720", "480", "360" })
+                    foreach (string q in _qualityMarkers)
                     {
                         if (res.Contains("<!--q:"))
                         {
-                            quality = " - " + Regex.Match(res, "<!--q:([^>]+)-->").Groups[1].Value;
+                            quality = " - " + _qualityTagRegex.Match(res).Groups[1].Value;
                             break;
                         }
                         else if (res.Contains($"\"{q}p\"") || res.Contains($">{q}p<") || res.Contains($"<!--{q}p-->"))

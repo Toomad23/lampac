@@ -322,7 +322,7 @@ namespace Shared.Engine
             if (inmemory != true && AppInit.conf.mikrotik == false && WriteCache(key, value, absoluteExpiration, default))
                 return value;
 
-            if (inmemory != true && AppInit.conf.mikrotik == false)
+            if (inmemory != true && AppInit.conf.mikrotik == false && AppInit.conf.filelog)
                 Console.WriteLine($"set memory: {key} / {DateTime.Now}");
 
             return memoryCache.Set(key, value, absoluteExpiration);
@@ -333,7 +333,7 @@ namespace Shared.Engine
             if (inmemory != true && AppInit.conf.mikrotik == false && WriteCache(key, value, default, absoluteExpirationRelativeToNow))
                 return value;
 
-            if (inmemory != true && AppInit.conf.mikrotik == false)
+            if (inmemory != true && AppInit.conf.mikrotik == false && AppInit.conf.filelog)
                 Console.WriteLine($"set memory: {key} / {DateTime.Now}");
 
             return memoryCache.Set(key, value, absoluteExpirationRelativeToNow);

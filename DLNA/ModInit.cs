@@ -1,6 +1,7 @@
 ﻿using DLNA.Controllers;
 using Shared;
 using Shared.Engine;
+using Shared.Models.Module;
 using System;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -9,6 +10,7 @@ using System.Threading.Tasks;
 
 namespace DLNA
 {
+    [ModuleEntry]
     public class ModInit
     {
         // Why: M-20 — ffmpeg commands are built by string-substituting {file}/{thumb}/{preview}

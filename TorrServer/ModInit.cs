@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 
 namespace TorrServer
 {
+    [ModuleEntry]
     public class ModInit
     {
         #region static

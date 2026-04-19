@@ -1,9 +1,11 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Shared.Models.Module;
 using Shared.Models.SQL;
 using System.Threading;
 
 namespace SISI
 {
+    [ModuleEntry]
     public class ModInit
     {
         private static Timer cleanupTimer;

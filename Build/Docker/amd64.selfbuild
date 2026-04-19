@@ -21,10 +21,20 @@ COPY TorrServer/TorrServer.csproj TorrServer/
 RUN dotnet restore Lampac.sln
 
 COPY . .
+# Lampac.csproj only references Shared.csproj, so `dotnet publish Lampac`
+# alone produces only Lampac.dll and Shared.dll.  Each module project
+# (DLNA, JacRed, SISI, Catalog, TorrServer, Tracks, Online, Merchant)
+# must be published separately into /publish/module/ — otherwise the
+# fork's security fixes for those modules never reach the runtime
+# (the upstream publish.zip ships stale upstream binaries in module/).
 RUN dotnet publish Lampac/Lampac.csproj -c Release -o /publish --no-restore \
+ && for proj in DLNA JacRed SISI Catalog TorrServer Tracks Online Merchant; do \
+        dotnet publish $proj/$proj.csproj -c Release -o /publish/module --no-restore || exit 1; \
+    done \
  && rm -rf /publish/runtimes/osx* /publish/runtimes/win* \
            /publish/runtimes/linux-arm /publish/runtimes/linux-arm64 \
            /publish/runtimes/linux-musl-arm64 /publish/runtimes/linux-musl-x64 \
+           /publish/module/runtimes \
  && touch /publish/isdocker
 
 # ---------- runtime stage ----------
@@ -42,14 +52,19 @@ RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnet
  && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet \
  && rm dotnet.tar.gz
 
-COPY --from=build /publish/ /home/
-
-# Upstream publish.zip bundles wwwroot, basemod, module and runtimes/references
-# that dotnet publish does not produce.  Fetch them from the latest release.
+# Upstream publish.zip ships wwwroot/, basemod/, plugins/ and a module/
+# folder that contains both third-party plugins (Lamson, Kinogram,
+# TelegramBot, etc.) and stale upstream copies of OUR modules
+# (DLNA.dll, JacRed.dll, SISI.dll, …).  Extract it FIRST so the COPY
+# below overwrites the stale upstream module DLLs with our freshly
+# built ones.  dotnet publish doesn't produce wwwroot/basemod/plugins
+# either, so we still need the upstream archive for those.
 RUN curl -fSL -o /tmp/publish.zip https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip \
- && unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* -d /home/ \
+ && unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* plugins/* -d /home/ \
  && mkdir -p runtimes/references \
  && rm /tmp/publish.zip
+
+COPY --from=build /publish/ /home/
 
 RUN mkdir -p torrserver \
  && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \

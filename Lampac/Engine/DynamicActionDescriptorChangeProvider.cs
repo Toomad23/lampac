@@ -15,8 +15,12 @@ namespace Lampac.Engine
 
         public void NotifyChanges()
         {
+            // Why: the previous CTS was swapped out and Cancel()ed but never disposed —
+            // CTSes are IDisposable and hold unmanaged resources. Dispose after Cancel
+            // so hot-reload churn doesn't leak one CTS per notification.
             var previous = Interlocked.Exchange(ref tokenSource, new CancellationTokenSource());
             previous.Cancel();
+            previous.Dispose();
         }
     }
 }

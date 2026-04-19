@@ -176,6 +176,11 @@ namespace Online.Controllers
 
         #region Video
         static FileStream logFileStream = null;
+        // Why: FileStream is NOT thread-safe; concurrent WriteAsync/FlushAsync from multiple
+        // requests corrupts the buffer and races on day-rollover re-creation. Serialise access
+        // and Dispose the previous stream on rollover so the FD doesn't leak.
+        static readonly object logFileStreamSync = new object();
+        static string logFilePath = null;
 
         [HttpGet]
         [Route("lite/videocdn/video")]
@@ -231,12 +236,26 @@ namespace Online.Controllers
 
                     string patchlog = $"cache/logs/VideoCDN/{DateTime.Today:dd-MM}.txt";
 
-                    if (logFileStream == null || !System.IO.File.Exists(patchlog))
-                        logFileStream = new FileStream(patchlog, FileMode.Append, FileAccess.Write);
-
                     var buffer = Encoding.UTF8.GetBytes($"{data}\n");
-                    await logFileStream.WriteAsync(buffer);
-                    await logFileStream.FlushAsync();
+
+                    // Why: serialise both the stream-rotation check and the writes. Using
+                    // sync I/O here is fine — log payload is tiny (one JSON line per request)
+                    // and the ImageMagick/HTTP work dominates. Dispose the previous stream
+                    // on path rollover so the FD doesn't leak.
+                    lock (logFileStreamSync)
+                    {
+                        if (logFileStream == null
+                            || !System.IO.File.Exists(patchlog)
+                            || !string.Equals(logFilePath, patchlog, StringComparison.Ordinal))
+                        {
+                            try { logFileStream?.Dispose(); } catch { }
+                            logFileStream = new FileStream(patchlog, FileMode.Append, FileAccess.Write);
+                            logFilePath = patchlog;
+                        }
+
+                        logFileStream.Write(buffer, 0, buffer.Length);
+                        logFileStream.Flush();
+                    }
                 }
             }
             catch { }

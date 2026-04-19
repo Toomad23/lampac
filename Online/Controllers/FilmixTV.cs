@@ -109,9 +109,14 @@ namespace Online.Controllers
         #region [Copilot AI] EnsureAccessToken
         async ValueTask<(bool IsSuccess, string Token, string ErrorMsg)> EnsureAccessToken()
         {
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await _accessTokenLock.WaitAsync(TimeSpan.FromMinutes(1));
+                acquired = await _accessTokenLock.WaitAsync(TimeSpan.FromMinutes(1));
+                if (!acquired)
+                    return (false, null, "busy");
 
                 string hashFile = $"cache/filmixtv-{CrypTo.md5(init.user_apitv)}.hash";
 
@@ -191,7 +196,8 @@ namespace Online.Controllers
             catch (Exception ex) { return (false, null, ex.Message); }
             finally
             {
-                _accessTokenLock.Release();
+                if (acquired)
+                    _accessTokenLock.Release();
             }
         }
         #endregion

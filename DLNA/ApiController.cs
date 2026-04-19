@@ -103,10 +103,16 @@ namespace DLNA.Controllers
 
             bullderClientEngine();
 
+            // Why: previously the foreach below ran synchronously on the thread that called
+            // Initialization() and awaited AddStreamingAsync/AddAsync via `.Result`. A single
+            // slow magnet fetch stalled boot. Offload the entire resume-download loop to a
+            // background task and await the adds instead of blocking on .Result.
+            _ = Task.Run(async () =>
+            {
             foreach (string path in _files)
             {
                 var t = Torrent.Load(path);
-                var manager = AppInit.conf.dlna.mode == "stream" ? torrentEngine.AddStreamingAsync(t, $"{dlna_path}/").Result : torrentEngine.AddAsync(t, $"{dlna_path}/").Result;
+                var manager = AppInit.conf.dlna.mode == "stream" ? await torrentEngine.AddStreamingAsync(t, $"{dlna_path}/").ConfigureAwait(false) : await torrentEngine.AddAsync(t, $"{dlna_path}/").ConfigureAwait(false);
 
                 //if (FastResume.TryLoad($"cache/fastresume/{t.InfoHash.ToHex()}.fresume", out FastResume resume))
                 //    manager.LoadFastResume(resume);
@@ -181,6 +187,7 @@ namespace DLNA.Controllers
                     catch { }
                 };
             }
+            });
             #endregion
         }
         #endregion

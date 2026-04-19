@@ -26,6 +26,7 @@ using System.Runtime.Loader;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Lampac
 {
@@ -155,11 +156,31 @@ namespace Lampac
             #region RchClient
             RchClient.hub += (e, req) =>
             {
+                // Why: previously fire-and-forget `_ = X.ConfigureAwait(false)` swallowed
+                // any exception thrown by the async send. Attach a faulted-only
+                // continuation that surfaces the failure to stderr so unhealthy transports
+                // aren't invisible. OnlyOnFaulted + inline continuation adds no overhead
+                // on the happy path.
                 if (mods.nws)
-                    _ = NativeWebSocket.SendRchRequestAsync(req.connectionId, req.rchId, req.url, req.data, req.headers, req.returnHeaders).ConfigureAwait(false);
+                {
+                    _ = NativeWebSocket.SendRchRequestAsync(req.connectionId, req.rchId, req.url, req.data, req.headers, req.returnHeaders)
+                        .ContinueWith(t =>
+                        {
+                            if (t.IsFaulted) Console.Error.WriteLine($"RCH nws send failed: {t.Exception}");
+                        }, TaskContinuationOptions.OnlyOnFaulted);
+                }
 
                 if (mods.ws)
-                    _ = soks.hubClients?.Client(req.connectionId)?.SendAsync("RchClient", req.rchId, req.url, req.data, req.headers, req.returnHeaders)?.ConfigureAwait(false);
+                {
+                    var sendTask = soks.hubClients?.Client(req.connectionId)?.SendAsync("RchClient", req.rchId, req.url, req.data, req.headers, req.returnHeaders);
+                    if (sendTask != null)
+                    {
+                        _ = sendTask.ContinueWith(t =>
+                        {
+                            if (t.IsFaulted) Console.Error.WriteLine($"RCH ws send failed: {t.Exception}");
+                        }, TaskContinuationOptions.OnlyOnFaulted);
+                    }
+                }
             };
             #endregion
 

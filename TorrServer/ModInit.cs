@@ -261,7 +261,13 @@ namespace TorrServer
                     var startedAt = DateTime.UtcNow;
                     try
                     {
+                        // Why: each restart created a new Process without disposing the
+                        // previous one → handle + pipe FD leak accumulates per restart.
+                        // Dispose after WaitForExit (or in catch) before the next iteration.
+                        var previous = tsprocess;
                         tsprocess = new Process();
+                        try { previous?.Dispose(); } catch { }
+
                         tsprocess.StartInfo.UseShellExecute = false;
                         tsprocess.StartInfo.RedirectStandardOutput = true;
                         tsprocess.StartInfo.RedirectStandardError = true;

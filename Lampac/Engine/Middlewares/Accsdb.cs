@@ -104,7 +104,14 @@ namespace Lampac.Engine.Middlewares
             {
                 var accsdb = AppInit.conf.accsdb;
 
-                if (httpContext.Request.Path.Value.StartsWith("/testaccsdb", StringComparison.OrdinalIgnoreCase) && accsdb.shared_passwd != null && requestInfo.user_uid == accsdb.shared_passwd)
+                bool sharedPasswdMatch = false;
+                if (httpContext.Request.Path.Value.StartsWith("/testaccsdb", StringComparison.OrdinalIgnoreCase) && accsdb.shared_passwd != null && requestInfo.user_uid != null)
+                {
+                    var _a = System.Text.Encoding.UTF8.GetBytes(requestInfo.user_uid);
+                    var _b = System.Text.Encoding.UTF8.GetBytes(accsdb.shared_passwd);
+                    sharedPasswdMatch = _a.Length == _b.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(_a, _b);
+                }
+                if (sharedPasswdMatch)
                 {
                     requestInfo.IsLocalRequest = true;
                     return _next(httpContext);

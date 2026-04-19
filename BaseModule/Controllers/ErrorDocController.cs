@@ -12,7 +12,9 @@ namespace Lampac.Controllers
         [Route("/e/acb")]
         public ActionResult Accsdb()
         {
-            string shared_passwd = CrypTo.unic(8).ToLowerInvariant();
+            byte[] _buf = new byte[32];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(_buf);
+            string shared_passwd = Convert.ToHexString(_buf).ToLowerInvariant();
             string pw1 = CrypTo.unic(6).ToLowerInvariant();
             string pw2 = CrypTo.unic(8).ToLowerInvariant();
 

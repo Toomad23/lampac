@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Shared.Engine.Utilities;
 using System.Web;
 
 namespace SISI.Controllers.Porntrex
@@ -66,6 +67,9 @@ namespace SISI.Controllers.Porntrex
                 if (!init.rhub_fallback)
                     return OnError("apkVersion", false);
             }
+
+            if (!SsrfGuard.IsAllowedPublicUriBasic(link))
+                return StatusCode(400, "invalid link");
 
             return await SemaphoreResult($"Porntrex:strem:{link}", async e =>
             {

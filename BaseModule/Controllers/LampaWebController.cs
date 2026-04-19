@@ -71,10 +71,23 @@ namespace Lampac.Controllers
         [Route("/testaccsdb")]
         public ActionResult TestAccsdb(string account_email, string uid)
         {
-            if (!string.IsNullOrEmpty(AppInit.conf.accsdb.shared_passwd) && uid == AppInit.conf.accsdb.shared_passwd)
-                return ContentTo("{\"accsdb\": true, \"newuid\": true}");
+            if (!string.IsNullOrEmpty(AppInit.conf.accsdb.shared_passwd) && uid != null)
+            {
+                var aBytes1 = System.Text.Encoding.UTF8.GetBytes(uid);
+                var bBytes1 = System.Text.Encoding.UTF8.GetBytes(AppInit.conf.accsdb.shared_passwd);
+                if (aBytes1.Length == bBytes1.Length && CryptographicOperations.FixedTimeEquals(aBytes1, bBytes1))
+                    return ContentTo("{\"accsdb\": true, \"newuid\": true}");
+            }
 
-            if (!string.IsNullOrEmpty(uid) && !string.IsNullOrEmpty(account_email) && account_email == AppInit.conf.accsdb.shared_passwd)
+            bool emailPasswdMatch = false;
+            if (!string.IsNullOrEmpty(uid) && !string.IsNullOrEmpty(account_email) && !string.IsNullOrEmpty(AppInit.conf.accsdb.shared_passwd))
+            {
+                var aBytes2 = System.Text.Encoding.UTF8.GetBytes(account_email);
+                var bBytes2 = System.Text.Encoding.UTF8.GetBytes(AppInit.conf.accsdb.shared_passwd);
+                emailPasswdMatch = aBytes2.Length == bBytes2.Length && CryptographicOperations.FixedTimeEquals(aBytes2, bBytes2);
+            }
+
+            if (emailPasswdMatch)
             {
                 try
                 {

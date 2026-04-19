@@ -333,7 +333,10 @@ namespace Online.Controllers
 
 
         #region getCookie
-        static Dictionary<string, string> authCookie = new Dictionary<string, string>();
+        // Why: Dictionary<TKey,TValue> is NOT thread-safe; concurrent controller instances
+        // hitting TryAdd/TryGetValue from multiple requests would throw or corrupt the bucket
+        // array. ConcurrentDictionary exposes the same TryGetValue/TryAdd surface safely.
+        static System.Collections.Concurrent.ConcurrentDictionary<string, string> authCookie = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
 
         async ValueTask<(string cookie, string log)> getCookie(RezkaSettings init, int timeoutError = 15)
         {

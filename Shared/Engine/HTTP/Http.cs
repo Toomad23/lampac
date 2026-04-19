@@ -1056,38 +1056,61 @@ namespace Shared.Engine
         {
             try
             {
-                using (var handler = Handler(url, proxy))
+                // Why: previously `new HttpClient(handler)` was created per call even though
+                // `using` disposes it — TCP sockets linger in TIME_WAIT (~4 min on Linux,
+                // longer on Windows) which exhausts ephemeral ports under poster/thumbnail
+                // load. Route through IHttpClientFactory like FrendlyHttp.MessageClient so
+                // connections are pooled. Fall back to the old path when no factory is
+                // registered yet or a per-request WebProxy is set (factory clients can't
+                // accept an ad-hoc proxy).
+                HttpClient ownedClient = null;
+                HttpClientHandler ownedHandler = null;
+                HttpClient client;
+
+                if (proxy == null && httpClientFactory != null)
                 {
-                    using (var client = new HttpClient(handler))
+                    client = httpClientFactory.CreateClient("base");
+                }
+                else
+                {
+                    ownedHandler = Handler(url, proxy);
+                    ownedClient = new HttpClient(ownedHandler);
+                    client = ownedClient;
+                }
+
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                    bool setDefaultUseragent = true;
+
+                    if (headers != null)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-
-                        bool setDefaultUseragent = true;
-
-                        if (headers != null)
+                        foreach (var item in headers)
                         {
-                            foreach (var item in headers)
-                            {
-                                if (item.name.Equals("user-agent", StringComparison.OrdinalIgnoreCase))
-                                    setDefaultUseragent = false;
+                            if (item.name.Equals("user-agent", StringComparison.OrdinalIgnoreCase))
+                                setDefaultUseragent = false;
 
-                                if (!client.DefaultRequestHeaders.Contains(item.name))
-                                    client.DefaultRequestHeaders.Add(item.name, item.val);
-                            }
-                        }
-
-                        if (setDefaultUseragent)
-                            client.DefaultRequestHeaders.Add("User-Agent", UserAgent);
-
-                        using (var stream = await client.GetStreamAsync(url))
-                        {
-                            using (var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
-                            {
-                                await stream.CopyToAsync(fileStream, PoolInvk.bufferSize);
-                                return true;
-                            }
+                            request.Headers.TryAddWithoutValidation(item.name, item.val);
                         }
                     }
+
+                    if (setDefaultUseragent)
+                        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+
+                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+                    using var stream = await response.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+                    using var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize);
+
+                    await stream.CopyToAsync(fileStream, PoolInvk.bufferSize, cts.Token).ConfigureAwait(false);
+                    return true;
+                }
+                finally
+                {
+                    ownedClient?.Dispose();
+                    ownedHandler?.Dispose();
                 }
             }
             catch
@@ -1102,42 +1125,59 @@ namespace Shared.Engine
         {
             try
             {
-                using (var handler = Handler(url, proxy))
+                // Why: same port-exhaustion story as DownloadFile — route the no-proxy path
+                // through IHttpClientFactory so sockets are pooled. Fall back when a
+                // per-request WebProxy is supplied or the factory isn't wired yet.
+                HttpClient ownedClient = null;
+                HttpClientHandler ownedHandler = null;
+                HttpClient client;
+
+                if (proxy == null && httpClientFactory != null)
                 {
-                    using (var client = new HttpClient(handler))
+                    client = httpClientFactory.CreateClient("base");
+                }
+                else
+                {
+                    ownedHandler = Handler(url, proxy);
+                    ownedClient = new HttpClient(ownedHandler);
+                    client = ownedClient;
+                }
+
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                    bool setDefaultUseragent = true;
+
+                    if (headers != null)
                     {
-                        client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-
-                        bool setDefaultUseragent = true;
-
-                        if (headers != null)
+                        foreach (var item in headers)
                         {
-                            foreach (var item in headers)
-                            {
-                                if (item.name.Equals("user-agent", StringComparison.OrdinalIgnoreCase))
-                                    setDefaultUseragent = false;
+                            if (item.name.Equals("user-agent", StringComparison.OrdinalIgnoreCase))
+                                setDefaultUseragent = false;
 
-                                if (!client.DefaultRequestHeaders.Contains(item.name))
-                                    client.DefaultRequestHeaders.Add(item.name, item.val);
-                            }
-                        }
-
-                        if (setDefaultUseragent)
-                            client.DefaultRequestHeaders.Add("User-Agent", UserAgent);
-
-                        using (HttpResponseMessage response = await client.GetAsync(url).ConfigureAwait(false))
-                        {
-                            if (response.StatusCode != HttpStatusCode.OK)
-                                return false;
-
-                            using (HttpContent content = response.Content)
-                            {
-                                await content.CopyToAsync(ms);
-                                ms.Position = 0;
-                                return true;
-                            }
+                            request.Headers.TryAddWithoutValidation(item.name, item.val);
                         }
                     }
+
+                    if (setDefaultUseragent)
+                        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+
+                    using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+                    if (response.StatusCode != HttpStatusCode.OK)
+                        return false;
+
+                    using HttpContent content = response.Content;
+                    await content.CopyToAsync(ms, cts.Token).ConfigureAwait(false);
+                    ms.Position = 0;
+                    return true;
+                }
+                finally
+                {
+                    ownedClient?.Dispose();
+                    ownedHandler?.Dispose();
                 }
             }
             catch

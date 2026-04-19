@@ -228,9 +228,15 @@ namespace SISI
             if (md5user == null || string.IsNullOrEmpty(id))
                 return StatusCode(403, "access denied");
 
+            // Why: WaitAsync(timeout) returns false on timeout. The previous code
+            // discarded that bool, so a timed-out wait still hit Release() in finally
+            // → SemaphoreFullException / silent over-increment. Track acquired state.
+            bool acquired = false;
             try
             {
-                await SisiContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                acquired = await SisiContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                if (!acquired)
+                    return StatusCode(503, "busy");
 
                 using (var sqlDb = SisiContext.Factory != null
                     ? SisiContext.Factory.CreateDbContext()
@@ -244,7 +250,8 @@ namespace SISI
             catch { }
             finally
             {
-                SisiContext.semaphore.Release();
+                if (acquired)
+                    SisiContext.semaphore.Release();
             }
 
             return Json(new

@@ -119,8 +119,12 @@ namespace Shared.PlaywrightCore
                     {
                         FileName = executablePath,
                         UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
+                        // Why: headless chrome is chatty; with redirected pipes and no
+                        // drainer the OS pipe buffer (64KB) fills within minutes and
+                        // chrome blocks on write. We never read these streams, so leave
+                        // them attached to the parent console (default).
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = false,
                         CreateNoWindow = false
                     };
 

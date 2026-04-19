@@ -146,11 +146,18 @@ namespace Online.Controllers
             if (!string.IsNullOrEmpty(access_token) && token_expires > DateTime.UtcNow)
                 return true;
 
-            var sem = _semaphoreLocks.GetOrAdd("vkmovie:anonym_token", _ => new System.Threading.SemaphoreSlim(1, 1));
+            // Why: use the bounded helper on BaseController so the per-controller SemaphoreSlim
+            // bag cannot be drained by attacker-controlled request volume (see BaseController).
+            var sem = GetOrAddSemaphore("vkmovie:anonym_token");
 
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await sem.WaitAsync(TimeSpan.FromSeconds(40));
+                acquired = await sem.WaitAsync(TimeSpan.FromSeconds(40));
+                if (!acquired)
+                    return false;
 
                 // double-check after acquiring semaphore
                 if (!string.IsNullOrEmpty(access_token) && token_expires > DateTime.UtcNow)
@@ -199,7 +206,8 @@ namespace Online.Controllers
             }
             finally
             {
-                sem.Release();
+                if (acquired)
+                    sem.Release();
             }
         }
     }

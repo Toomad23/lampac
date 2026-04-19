@@ -584,7 +584,16 @@ namespace Lampac.Engine.Middlewares
                     process.StartInfo.UseShellExecute = false;
                     process.StartInfo.CreateNoWindow = true;
 
+                    // Why: if ImageMagick prints >64KB to stdout/stderr (noisy warnings on
+                    // malformed posters) the pipe buffer fills and `convert` blocks on
+                    // write while we block on WaitForExitAsync → permanent hang.
+                    // Attach discarding handlers and drain asynchronously before waiting.
+                    process.OutputDataReceived += (_, __) => { };
+                    process.ErrorDataReceived += (_, __) => { };
+
                     process.Start();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
                     await process.WaitForExitAsync();
 
                     if (process.ExitCode != 0)

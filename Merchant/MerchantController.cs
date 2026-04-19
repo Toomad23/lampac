@@ -3,6 +3,7 @@ using Shared.Models.Base;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -38,7 +39,49 @@ namespace Merchant
 
         // Why: one lock per (merch, order) serialises concurrent callbacks for the same payment (H-23)
         // so only the first wins the dedup check; others see the entry and exit without crediting again.
-        static readonly ConcurrentDictionary<string, SemaphoreSlim> _payLocks = new();
+        //
+        // Why (DoS): unbounded ConcurrentDictionary<string, SemaphoreSlim> grew forever with arbitrary
+        // attacker-controlled keys. Each SemaphoreSlim holds a ManualResetEvent (kernel primitive),
+        // eventually exhausting OS handles. Track lastUsed and sweep entries older than 10 min on
+        // every insert; cap hard at 10 000 entries (drop oldest when exceeded).
+        static readonly ConcurrentDictionary<string, (SemaphoreSlim sem, long lastUsedTicks)> _payLocks = new();
+        const int _payLocksMaxEntries = 10_000;
+        static readonly TimeSpan _payLocksTtl = TimeSpan.FromMinutes(10);
+
+        static SemaphoreSlim GetPayLock(string key)
+        {
+            var entry = _payLocks.AddOrUpdate(
+                key,
+                _ => (new SemaphoreSlim(1, 1), DateTime.UtcNow.Ticks),
+                (_, existing) => (existing.sem, DateTime.UtcNow.Ticks));
+
+            // Opportunistic sweep — O(n) but n is bounded, runs at most once per add.
+            long thresholdTicks = DateTime.UtcNow.Add(-_payLocksTtl).Ticks;
+            foreach (var kv in _payLocks)
+            {
+                if (kv.Value.lastUsedTicks < thresholdTicks)
+                {
+                    if (_payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
+                    {
+                        try { kv.Value.sem.Dispose(); } catch { }
+                    }
+                }
+            }
+
+            // Hard cap — if still over budget, evict oldest entries.
+            if (_payLocks.Count > _payLocksMaxEntries)
+            {
+                foreach (var kv in _payLocks.OrderBy(p => p.Value.lastUsedTicks).Take(_payLocks.Count - _payLocksMaxEntries))
+                {
+                    if (_payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
+                    {
+                        try { kv.Value.sem.Dispose(); } catch { }
+                    }
+                }
+            }
+
+            return entry.sem;
+        }
 
         // Why: guards reload-from-disk so two concurrent callbacks don't race on reading users.txt
         // and building _users from a half-written file.
@@ -84,7 +127,7 @@ namespace Merchant
         public static void PayConfirm(string email, string merch, string order, int days = 0)
         {
             // Why: serialise check-mutate-append per (merch, order) — H-23 race on double-credit.
-            var sem = _payLocks.GetOrAdd(dedupKey(merch, order), _ => new SemaphoreSlim(1, 1));
+            var sem = GetPayLock(dedupKey(merch, order));
 
             sem.Wait();
             try

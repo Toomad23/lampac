@@ -71,6 +71,10 @@ namespace Shared.Engine
 
         SemaphoreEntry semaphore { get; set; }
         CancellationToken cancellationToken;
+        // Why: previously the timeout CTS was constructed inline and only its Token kept,
+        // so the CTS (and its rooted Timer) leaked until the token fired. Retain the
+        // source so Dispose can tear it down deterministically.
+        CancellationTokenSource ownedCts;
 
         bool regwait, releaseLock;
         // Why: Guarantees the constructor-side TryCheckout increment is balanced by exactly one
@@ -81,13 +85,15 @@ namespace Shared.Engine
 
         public SemaphorManager(string key)
         {
-            cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(40)).Token;
+            ownedCts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            cancellationToken = ownedCts.Token;
             semaphore = AcquireEntry(key);
         }
 
         public SemaphorManager(string key, TimeSpan timeSpan)
         {
-            cancellationToken = new CancellationTokenSource(timeSpan).Token;
+            ownedCts = new CancellationTokenSource(timeSpan);
+            cancellationToken = ownedCts.Token;
             semaphore = AcquireEntry(key);
         }
 
@@ -134,6 +140,13 @@ namespace Shared.Engine
                 // independent of whether Release was reached after a successful WaitAsync.
                 // This keeps activeUsers accurate so Cleanup only disposes truly idle entries.
                 ReleaseCheckout();
+                // Why: dispose the CTS we created with a timeout so its internal Timer is
+                // released immediately instead of waiting to fire.
+                var cts = Interlocked.Exchange(ref ownedCts, null);
+                if (cts != null)
+                {
+                    try { cts.Dispose(); } catch { }
+                }
             }
         }
 
@@ -161,6 +174,11 @@ namespace Shared.Engine
             {
                 semaphore.Release();
                 ReleaseCheckout();
+                var cts = Interlocked.Exchange(ref ownedCts, null);
+                if (cts != null)
+                {
+                    try { cts.Dispose(); } catch { }
+                }
             }
         }
 
@@ -175,6 +193,11 @@ namespace Shared.Engine
             {
                 semaphore.Release();
                 ReleaseCheckout();
+                var cts = Interlocked.Exchange(ref ownedCts, null);
+                if (cts != null)
+                {
+                    try { cts.Dispose(); } catch { }
+                }
             }
         }
 
@@ -190,6 +213,11 @@ namespace Shared.Engine
             {
                 semaphore.Release();
                 ReleaseCheckout();
+                var cts = Interlocked.Exchange(ref ownedCts, null);
+                if (cts != null)
+                {
+                    try { cts.Dispose(); } catch { }
+                }
             }
         }
 
@@ -204,6 +232,11 @@ namespace Shared.Engine
             {
                 semaphore.Release();
                 ReleaseCheckout();
+                var cts = Interlocked.Exchange(ref ownedCts, null);
+                if (cts != null)
+                {
+                    try { cts.Dispose(); } catch { }
+                }
             }
         }
 

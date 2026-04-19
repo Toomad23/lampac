@@ -16,7 +16,9 @@ namespace Shared.Engine
         {
             try
             {
-                var process = new Process();
+                // Why: without `using` the Process handle + its output/error AnonymousPipe
+                // file descriptors leak per probe call.
+                using var process = new Process();
                 process.StartInfo.UseShellExecute = false;
                 process.StartInfo.RedirectStandardOutput = true;
                 process.StartInfo.RedirectStandardError = true;

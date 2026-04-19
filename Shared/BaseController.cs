@@ -11,6 +11,7 @@ using Shared.Models.Base;
 using Shared.Models.Events;
 using Shared.Models.SISI.OnResult;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -31,7 +32,50 @@ namespace Shared
 
         public static string minorversion => "1";
 
-        protected static readonly ConcurrentDictionary<string, SemaphoreSlim> _semaphoreLocks = new();
+        // Why (DoS): this bag is keyed by arbitrary request strings; each SemaphoreSlim pins a
+        // kernel ManualResetEvent. Left unbounded, an attacker that submits unique keys drains
+        // kernel primitives. Callers MUST use GetOrAddSemaphore(key) instead of GetOrAdd on the
+        // raw dictionary — the helper tracks last-use, sweeps entries older than 10 minutes on
+        // every insert, and caps total size at 10 000 (oldest evicted). Entry type is
+        // (SemaphoreSlim, lastUsedTicks) so every hit refreshes the recency timestamp.
+        protected static readonly ConcurrentDictionary<string, (SemaphoreSlim sem, long lastUsedTicks)> _semaphoreLocks = new();
+
+        const int _semaphoreLocksMaxEntries = 10_000;
+        static readonly TimeSpan _semaphoreLocksTtl = TimeSpan.FromMinutes(10);
+
+        protected static SemaphoreSlim GetOrAddSemaphore(string key)
+        {
+            var entry = _semaphoreLocks.AddOrUpdate(
+                key,
+                _ => (new SemaphoreSlim(1, 1), DateTime.UtcNow.Ticks),
+                (_, existing) => (existing.sem, DateTime.UtcNow.Ticks));
+
+            // Opportunistic sweep — bounded by dictionary size.
+            long thresholdTicks = DateTime.UtcNow.Add(-_semaphoreLocksTtl).Ticks;
+            foreach (var kv in _semaphoreLocks)
+            {
+                if (kv.Value.lastUsedTicks < thresholdTicks)
+                {
+                    if (_semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
+                    {
+                        try { kv.Value.sem.Dispose(); } catch { }
+                    }
+                }
+            }
+
+            if (_semaphoreLocks.Count > _semaphoreLocksMaxEntries)
+            {
+                foreach (var kv in _semaphoreLocks.OrderBy(p => p.Value.lastUsedTicks).Take(_semaphoreLocks.Count - _semaphoreLocksMaxEntries))
+                {
+                    if (_semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
+                    {
+                        try { kv.Value.sem.Dispose(); } catch { }
+                    }
+                }
+            }
+
+            return entry.sem;
+        }
 
         protected ActionResult badInitMsg { get; set; }
 

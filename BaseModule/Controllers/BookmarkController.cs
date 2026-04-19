@@ -73,9 +73,14 @@ namespace Lampac.Controllers
 
                 if (System.IO.File.Exists(storageFile) && !System.IO.File.Exists($"{storageFile}.migration"))
                 {
+                    // Why: WaitAsync(timeout) returns false on timeout; the previous code
+                    // discarded the bool and released unconditionally → over-increment.
+                    bool migrationAcquired = false;
                     try
                     {
-                        await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(40));
+                        migrationAcquired = await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(40));
+                        if (!migrationAcquired)
+                            goto skipMigration;
 
                         if (System.IO.File.Exists(storageFile) && !System.IO.File.Exists($"{storageFile}.migration"))
                         {
@@ -161,8 +166,10 @@ namespace Lampac.Controllers
                     catch { }
                     finally
                     {
-                        SyncUserContext.semaphore.Release();
+                        if (migrationAcquired)
+                            SyncUserContext.semaphore.Release();
                     }
+                    skipMigration: ;
                 }
             }
             #endregion
@@ -215,9 +222,14 @@ namespace Lampac.Controllers
 
                 bool IsDbInitialization = false;
 
+                // Why: WaitAsync(timeout) returns false on timeout; the previous code
+                // discarded the bool and released unconditionally → over-increment.
+                bool acquired = false;
                 try
                 {
-                    await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                    acquired = await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                    if (!acquired)
+                        return StatusCode(503, "busy");
 
                     using (var sqlDb = SyncUserContext.Factory != null
                         ? SyncUserContext.Factory.CreateDbContext()
@@ -263,13 +275,14 @@ namespace Lampac.Controllers
                         Save(sqlDb, entity, data);
                     }
                 }
-                catch 
+                catch
                 {
                     return JsonFailure();
                 }
                 finally
                 {
-                    SyncUserContext.semaphore.Release();
+                    if (acquired)
+                        SyncUserContext.semaphore.Release();
                 }
 
                 if (IsDbInitialization)
@@ -304,9 +317,14 @@ namespace Lampac.Controllers
 
             bool isAddedRequest = HttpContext?.Request?.Path.Value?.StartsWith("/bookmark/added", StringComparison.OrdinalIgnoreCase) == true;
 
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                acquired = await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                if (!acquired)
+                    return StatusCode(503, "busy");
 
                 using (var sqlDb = SyncUserContext.Factory != null
                     ? SyncUserContext.Factory.CreateDbContext()
@@ -350,13 +368,14 @@ namespace Lampac.Controllers
 
                 return JsonSuccess();
             }
-            catch 
+            catch
             {
                 return JsonFailure();
             }
             finally
             {
-                SyncUserContext.semaphore.Release();
+                if (acquired)
+                    SyncUserContext.semaphore.Release();
             }
         }
         #endregion
@@ -374,9 +393,14 @@ namespace Lampac.Controllers
             if (readBody.payloads.Count == 0)
                 return JsonFailure();
 
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                acquired = await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                if (!acquired)
+                    return StatusCode(503, "busy");
 
                 using (var sqlDb = SyncUserContext.Factory != null
                     ? SyncUserContext.Factory.CreateDbContext()
@@ -424,13 +448,14 @@ namespace Lampac.Controllers
 
                 return JsonSuccess();
             }
-            catch 
+            catch
             {
                 return JsonFailure();
             }
             finally
             {
-                SyncUserContext.semaphore.Release();
+                if (acquired)
+                    SyncUserContext.semaphore.Release();
             }
         }
         #endregion

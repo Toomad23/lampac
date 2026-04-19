@@ -110,7 +110,9 @@ namespace Lampac.Engine.CRON
 
                     using (UdpClient client = new UdpClient(host, port))
                     {
-                        CancellationTokenSource cts = new CancellationTokenSource();
+                        // Why: previously the CTS (and its internal Timer) leaked per call;
+                        // hundreds of trackers per cron run rooted hundreds of timers.
+                        using var cts = new CancellationTokenSource();
                         cts.CancelAfter(7000);
 
                         string uri = Regex.Match(tracker, "^[^/]/(.*)").Groups[1].Value;

@@ -1,10 +1,14 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Shared.Models.Base;
 using Shared.Models.Proxy;
+using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Shared.Engine
 {
@@ -236,19 +240,46 @@ namespace Shared.Engine
                     string mkey = $"ProxyManager:{p.url}";
                     if (!memoryCache.TryGetValue(mkey, out List<string> list))
                     {
+                        // Why: previously blocked on Http.Get(...).Result inside a sync
+                        // method reached from hot request paths — classic sync-over-async
+                        // leading to thread-pool starvation under load. Instead, kick off
+                        // a background fetch to warm the cache and return an empty list
+                        // for the first request. Subsequent requests see the populated
+                        // cache entry and proceed normally.
                         list = new List<string>();
 
-                        string txt = Http.Get(p.url, timeoutSeconds: 5).Result;
-                        if (txt != null)
-                        {
-                            foreach (string line in txt.Split("\n"))
-                            {
-                                if (line.Contains(":"))
-                                    list.Add(line.Trim());
-                            }
-                        }
-
+                        // Marker to avoid stampeding the origin when many requests race
+                        // on an empty cache: store the empty list immediately and only
+                        // launch one refresh per 15-minute window.
                         memoryCache.Set(mkey, list, DateTime.Now.AddMinutes(15));
+
+                        string refreshKey = mkey + ":refresh";
+                        if (!memoryCache.TryGetValue(refreshKey, out _))
+                        {
+                            memoryCache.Set(refreshKey, true, DateTime.Now.AddMinutes(15));
+                            string url = p.url;
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    string txt = await Http.Get(url, timeoutSeconds: 5).ConfigureAwait(false);
+                                    if (txt != null)
+                                    {
+                                        var populated = new List<string>();
+                                        foreach (string line in txt.Split("\n"))
+                                        {
+                                            if (line.Contains(":"))
+                                                populated.Add(line.Trim());
+                                        }
+                                        memoryCache.Set(mkey, populated, DateTime.Now.AddMinutes(15));
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.Error.WriteLine($"ProxyManager: refresh {url} failed: {ex.Message}");
+                                }
+                            });
+                        }
                     }
 
                     p.list = list.ToArray();

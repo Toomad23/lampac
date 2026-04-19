@@ -71,9 +71,14 @@ namespace Lampac.Controllers
 
             bool success = false;
 
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                acquired = await SyncUserContext.semaphore.WaitAsync(TimeSpan.FromSeconds(30));
+                if (!acquired)
+                    return ContentTo("{\"success\": false}");
 
                 using (var sqlDb = SyncUserContext.Factory != null
                     ? SyncUserContext.Factory.CreateDbContext()
@@ -98,7 +103,8 @@ namespace Lampac.Controllers
             catch { }
             finally
             {
-                SyncUserContext.semaphore.Release();
+                if (acquired)
+                    SyncUserContext.semaphore.Release();
             }
 
             return ContentTo($"{{\"success\": {success.ToString().ToLower()}}}");

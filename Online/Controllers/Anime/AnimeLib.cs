@@ -290,9 +290,14 @@ namespace Online.Controllers
             if (!string.IsNullOrEmpty(init.token))
                 return;
 
+            // Why: WaitAsync(timeout) returns false on timeout; the previous code
+            // discarded the bool and released unconditionally → over-increment.
+            bool acquired = false;
             try
             {
-                await TokenSemaphore.WaitAsync(TimeSpan.FromMinutes(1));
+                acquired = await TokenSemaphore.WaitAsync(TimeSpan.FromMinutes(1));
+                if (!acquired)
+                    return;
 
                 AnimeLibTokenState cache = null;
                 string TokenCachePath = Path.Combine("cache", "animelib.json");
@@ -338,7 +343,8 @@ namespace Online.Controllers
             catch { }
             finally
             {
-                TokenSemaphore.Release();
+                if (acquired)
+                    TokenSemaphore.Release();
             }
         }
 

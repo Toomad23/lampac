@@ -384,7 +384,7 @@ namespace Shared
 
         public string defaultOn = "enable";
 
-        public string corsehost { get; set; } = "https://cors.apn.monster";
+        public string corsehost { get; set; } = "https://cors.bwa.workers.dev";
 
         public BaseModule BaseModule { get; set; } = new BaseModule()
         {
@@ -882,9 +882,9 @@ namespace Shared
             rchstreamproxy = "web"
         };
 
-        public OnlinesSettings RutubeMovie { get; set; } = new OnlinesSettings("RutubeMovie", "kwwsv=22uxwxeh1ux", streamproxy: true, rch_access: "apk,cors");
+        public OnlinesSettings RutubeMovie { get; set; } = new OnlinesSettings("RutubeMovie", "kwwsv=22uxwxeh1ux", streamproxy: true, rch_access: "apk,cors,web");
 
-        public OnlinesSettings VkMovie { get; set; } = new OnlinesSettings("VkMovie", "kwwsv=22dsl1ynylghr1ux", streamproxy: true, rch_access: "apk,cors", stream_access: "apk,cors")
+        public OnlinesSettings VkMovie { get; set; } = new OnlinesSettings("VkMovie", "kwwsv=22dsl1ynylghr1ux", streamproxy: true, rch_access: "apk,cors,web", stream_access: "apk,cors,web")
         {
             headers = HeadersModel.Init(Http.defaultFullHeaders,
                 ("origin", "encrypt:kwwsv=22ynylghr1ux"),
@@ -917,10 +917,10 @@ namespace Shared
             corseu = true 
         };
 
-        public PidTorSettings PidTor { get; set; } = new PidTorSettings() 
-        { 
-            enable = true, redapi = "http://redapi.cfhttp.top", 
-            min_sid = 15, emptyVoice = true 
+        public PidTorSettings PidTor { get; set; } = new PidTorSettings()
+        {
+            enable = false, redapi = "http://redapi.cfhttp.top",
+            min_sid = 15, emptyVoice = true
         };
 
         /// <summary>

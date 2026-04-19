@@ -4,17 +4,32 @@ namespace Shared.Engine
 {
     public static class Bash
     {
+        // HIGH-6: build the ProcessStartInfo via ArgumentList rather than concatenating the
+        // caller-supplied string into a shell-quoted `-c "…"`. The old escaping only handled
+        // '"' and '\''; backticks, $( ), ;, &, | all survived, so any caller that ever passed
+        // attacker-influenced text (current call-sites are admin/config-only, but fragile)
+        // could achieve shell metacharacter injection. ArgumentList hands each slot to the
+        // kernel's argv directly; bash still interprets the SINGLE `-c` payload but there is
+        // no longer a concatenation boundary where a caller string can break out of its slot.
+        static ProcessStartInfo MakeInfo(string command, bool redirectStderr)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = redirectStderr,
+            };
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add(command ?? string.Empty);
+            return psi;
+        }
+
         public static bool Invoke(string comand)
         {
             try
             {
-                var processInfo = new ProcessStartInfo();
-                processInfo.UseShellExecute = false;
-                processInfo.RedirectStandardOutput = true;
-                processInfo.FileName = "/bin/bash";
-                processInfo.Arguments = $" -c \"{comand.Replace("\"", "\\\"").Replace("'", "\\\'")}\"";
-
-                var process = Process.Start(processInfo);
+                var process = Process.Start(MakeInfo(comand, redirectStderr: false));
                 if (process == null)
                     return false;
 
@@ -30,14 +45,7 @@ namespace Shared.Engine
         {
             try
             {
-                var processInfo = new ProcessStartInfo();
-                processInfo.UseShellExecute = false;
-                processInfo.RedirectStandardError = true;
-                processInfo.RedirectStandardOutput = true;
-                processInfo.FileName = "/bin/bash";
-                processInfo.Arguments = $" -c \"{comand.Replace("\"", "\\\"").Replace("'", "\\\'")}\"";
-
-                var process = Process.Start(processInfo);
+                var process = Process.Start(MakeInfo(comand, redirectStderr: true));
                 if (process == null)
                     return null;
 

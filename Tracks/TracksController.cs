@@ -5,6 +5,8 @@ using Shared;
 using Shared.Engine;
 using System;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -144,6 +146,15 @@ namespace Tracks.Controllers
                         !ffconf.allowHosts.Contains(uri.Host, System.StringComparer.OrdinalIgnoreCase))
                         return showerror ? "host" : "{}";
 
+                    // HIGH-5: ffprobe follows 3xx by default, so even when the initial host passes
+                    // SsrfGuard an attacker-controlled public endpoint can 302 to
+                    // http://169.254.169.254 / http://127.0.0.1 / internal services. Resolve the
+                    // final URL via HttpClient with AllowAutoRedirect=false, revalidating every
+                    // hop with SsrfGuard before handing the URL to the ffprobe subprocess.
+                    string resolvedUri = await ResolveSafeRedirectsAsync(uri.AbsoluteUri, ffconf.allowHosts);
+                    if (string.IsNullOrEmpty(resolvedUri))
+                        return showerror ? "redirect" : "{}";
+
                     var process = new System.Diagnostics.Process();
                     process.StartInfo.UseShellExecute = false;
                     process.StartInfo.RedirectStandardOutput = true;
@@ -156,7 +167,17 @@ namespace Tracks.Controllers
                     process.StartInfo.ArgumentList.Add("json");
                     process.StartInfo.ArgumentList.Add("-show_format");
                     process.StartInfo.ArgumentList.Add("-show_streams");
-                    process.StartInfo.ArgumentList.Add(AccsDbInvk.Args(uri.AbsoluteUri, httpContext));
+                    // HIGH-5: harden protocols and disable reconnect/seek behaviour that could
+                    // otherwise be steered onto internal services via side channels.
+                    process.StartInfo.ArgumentList.Add("-protocol_whitelist");
+                    process.StartInfo.ArgumentList.Add("http,https,tls,tcp");
+                    process.StartInfo.ArgumentList.Add("-reconnect");
+                    process.StartInfo.ArgumentList.Add("0");
+                    process.StartInfo.ArgumentList.Add("-reconnect_streamed");
+                    process.StartInfo.ArgumentList.Add("0");
+                    process.StartInfo.ArgumentList.Add("-seekable");
+                    process.StartInfo.ArgumentList.Add("0");
+                    process.StartInfo.ArgumentList.Add(AccsDbInvk.Args(resolvedUri, httpContext));
 
                     argumentList = process.StartInfo.FileName + " " + string.Join(" ", process.StartInfo.ArgumentList);
 
@@ -184,6 +205,77 @@ namespace Tracks.Controllers
             }
 
             return string.IsNullOrEmpty(outPut) ? (showerror ? argumentList : "{}") : outPut;
+        }
+
+
+        // HIGH-5: manually resolve HTTP redirects BEFORE invoking ffprobe. Every hop (including
+        // the initial URL) must pass SsrfGuard so an attacker cannot redirect ffprobe onto
+        // loopback/metadata/internal services, and the optional ffprobe.allowHosts list is
+        // re-applied at each hop. Returns null if any hop is unsafe or the chain is too long.
+        private static readonly HttpClient _redirectProbeClient = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.None
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        };
+
+        static async Task<string> ResolveSafeRedirectsAsync(string startUri, string[] allowHosts)
+        {
+            const int maxHops = 3;
+            string current = startUri;
+
+            for (int hop = 0; hop <= maxHops; hop++)
+            {
+                if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(current))
+                    return null;
+
+                if (allowHosts != null && allowHosts.Length > 0)
+                {
+                    if (!Uri.TryCreate(current, UriKind.Absolute, out var parsed))
+                        return null;
+                    if (!allowHosts.Contains(parsed.Host, StringComparer.OrdinalIgnoreCase))
+                        return null;
+                }
+
+                HttpResponseMessage resp;
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Head, current);
+                    resp = await _redirectProbeClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Upstream may reject HEAD; accept the URL as-is (ffprobe itself will fail
+                    // cleanly on unreachable targets — important: do NOT follow an unknown
+                    // redirect we couldn't verify).
+                    return current;
+                }
+
+                try
+                {
+                    int code = (int)resp.StatusCode;
+                    if (code < 300 || code >= 400 || resp.Headers.Location == null)
+                        return current;
+
+                    Uri next = resp.Headers.Location.IsAbsoluteUri
+                        ? resp.Headers.Location
+                        : new Uri(new Uri(current), resp.Headers.Location);
+
+                    if (next.Scheme != Uri.UriSchemeHttp && next.Scheme != Uri.UriSchemeHttps)
+                        return null;
+
+                    current = next.AbsoluteUri;
+                }
+                finally
+                {
+                    resp.Dispose();
+                }
+            }
+
+            // Too many hops — treat as unsafe.
+            return null;
         }
     }
 }

@@ -30,7 +30,6 @@ namespace Merchant.Controllers
 
 
         [HttpGet]
-        [AllowAnonymous]
         [Route("streampay/new")]
         async public Task<ActionResult> Index(string email)
         {
@@ -39,6 +38,17 @@ namespace Merchant.Controllers
                 return Content(string.Empty);
 
             email = decodeEmail(email);
+
+            // HIGH-4: require the caller to be authenticated and to own the email they're paying for.
+            // Previously `[AllowAnonymous] /streampay/new?email=victim@…` stored an arbitrary email
+            // as the invoice owner; on callback PayConfirm(email, …) credited the premium to the
+            // victim's account. Bind invoice to the authenticated uid only.
+            string authUid = requestInfo?.user_uid;
+            if (string.IsNullOrWhiteSpace(authUid))
+                return Content("unauthorized");
+
+            if (!string.Equals(authUid.Trim(), email.Trim(), StringComparison.OrdinalIgnoreCase))
+                return Content("uid mismatch");
 
             // Why: M-28 — replace predictable DateTime.ToBinary() transid with a cryptographically
             // random 32-hex-char id so an attacker can't guess/race invoice filenames.

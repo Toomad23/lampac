@@ -189,10 +189,21 @@ namespace Lampac.Engine.Middlewares
                 {
                     if (httpContext.Request.Headers.TryGetValue(header.Key, out var headerValue) && !string.IsNullOrEmpty(headerValue))
                     {
-                        if (Regex.IsMatch(headerValue.ToString(), header.Value, RegexOptions.IgnoreCase))
+                        // HIGH-7: admin-configured regex with no MatchTimeout is a ReDoS vector —
+                        // a pathological pattern + crafted header value (`(a+)+$`, etc.) would
+                        // block the worker indefinitely. Cap the engine at 50ms and treat a
+                        // timeout as a no-match so one bad rule can't DoS the pipeline.
+                        try
                         {
-                            httpContext.Response.StatusCode = 403;
-                            return Task.CompletedTask;
+                            if (Regex.IsMatch(headerValue.ToString(), header.Value, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50)))
+                            {
+                                httpContext.Response.StatusCode = 403;
+                                return Task.CompletedTask;
+                            }
+                        }
+                        catch (RegexMatchTimeoutException ex)
+                        {
+                            try { Console.WriteLine($"WAF headersDeny regex timeout on '{header.Key}': {ex.Pattern}"); } catch { }
                         }
                     }
                 }
@@ -253,8 +264,17 @@ namespace Lampac.Engine.Middlewares
             {
                 foreach (var pathLimit in waf.limit_map)
                 {
-                    if (Regex.IsMatch(path, pathLimit.Key, RegexOptions.IgnoreCase))
-                        return (pathLimit.Key, pathLimit.Value);
+                    // HIGH-7: bound evaluation time. On timeout, treat as non-match and move on;
+                    // dropping into the default limit bucket is safer than stalling the worker.
+                    try
+                    {
+                        if (Regex.IsMatch(path, pathLimit.Key, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50)))
+                            return (pathLimit.Key, pathLimit.Value);
+                    }
+                    catch (RegexMatchTimeoutException ex)
+                    {
+                        try { Console.WriteLine($"WAF limit_map regex timeout on '{pathLimit.Key}': {ex.Pattern}"); } catch { }
+                    }
                 }
             }
 

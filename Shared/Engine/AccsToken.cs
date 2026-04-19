@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -10,6 +12,14 @@ namespace Shared.Engine
         const int SignatureHexLen = SignatureBytes * 2; // 40 hex chars
 
         static volatile byte[] _hmacKey;
+
+        // HIGH-3: token revocation list. Entries are "uid|issuedAtUnix" OR "uid|*" (revoke-all-for-uid).
+        // Loaded once from database/admin-revoked-tokens.txt on first access and append-on-revoke.
+        static readonly ConcurrentDictionary<string, byte> _revoked = new(StringComparer.Ordinal);
+        static volatile bool _revokedLoaded;
+        static readonly object _revokedLoadLock = new();
+        const string RevokedPath = "database/admin-revoked-tokens.txt";
+        const string AuditPath = "database/admin-audit.log";
 
         public static void Init(string hmacSecret)
         {
@@ -24,6 +34,66 @@ namespace Shared.Engine
 
         public static bool IsEnabled => _hmacKey != null;
 
+        static void EnsureRevokedLoaded()
+        {
+            if (_revokedLoaded) return;
+            lock (_revokedLoadLock)
+            {
+                if (_revokedLoaded) return;
+                try
+                {
+                    if (File.Exists(RevokedPath))
+                    {
+                        foreach (string line in File.ReadAllLines(RevokedPath))
+                        {
+                            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#"))
+                                continue;
+                            _revoked.TryAdd(line.Trim(), 0);
+                        }
+                    }
+                }
+                catch { }
+                _revokedLoaded = true;
+            }
+        }
+
+        public static void Revoke(string uid, long issuedAtUnix = -1)
+        {
+            if (string.IsNullOrEmpty(uid)) return;
+            EnsureRevokedLoaded();
+            string entry = issuedAtUnix > 0 ? $"{uid}|{issuedAtUnix}" : $"{uid}|*";
+            if (_revoked.TryAdd(entry, 0))
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(RevokedPath) ?? ".");
+                    File.AppendAllText(RevokedPath, entry + "\n");
+                }
+                catch { }
+            }
+        }
+
+        public static bool IsRevoked(string uid, long issuedAtUnix)
+        {
+            EnsureRevokedLoaded();
+            if (_revoked.ContainsKey($"{uid}|*"))
+                return true;
+            if (issuedAtUnix > 0 && _revoked.ContainsKey($"{uid}|{issuedAtUnix}"))
+                return true;
+            return false;
+        }
+
+        public static void Audit(string kind, string uid, string extra, string adminIp)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(AuditPath) ?? ".");
+                string line = $"{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}\t{kind}\tuid={uid}\tip={adminIp}\t{extra}\n";
+                File.AppendAllText(AuditPath, line);
+            }
+            catch { }
+        }
+
         public static string Generate(string uid, DateTime expiresUtc)
         {
             if (_hmacKey == null || string.IsNullOrEmpty(uid))
@@ -31,8 +101,23 @@ namespace Shared.Engine
 
             string uidB64 = Base64UrlEncode(uid);
             long expiry = new DateTimeOffset(expiresUtc).ToUnixTimeSeconds();
-            string payload = $"{uidB64}.{expiry}";
+            // HIGH-3: embed issuedAt so revocation can target a specific token issuance without
+            // voiding every token ever issued for the uid.
+            long issuedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string payload = $"{uidB64}.{expiry}.{issuedAt}";
 
+            byte[] sig = ComputeSignature(payload);
+            return $"{payload}.{Convert.ToHexString(sig, 0, SignatureBytes).ToLower()}";
+        }
+
+        // Kept for back-compat with already-issued tokens that only carry uid.expiry.sig.
+        public static string GenerateLegacy(string uid, DateTime expiresUtc)
+        {
+            if (_hmacKey == null || string.IsNullOrEmpty(uid))
+                return null;
+            string uidB64 = Base64UrlEncode(uid);
+            long expiry = new DateTimeOffset(expiresUtc).ToUnixTimeSeconds();
+            string payload = $"{uidB64}.{expiry}";
             byte[] sig = ComputeSignature(payload);
             return $"{payload}.{Convert.ToHexString(sig, 0, SignatureBytes).ToLower()}";
         }
@@ -42,17 +127,16 @@ namespace Shared.Engine
             if (_hmacKey == null || string.IsNullOrEmpty(token))
                 return (null, false);
 
-            int firstDot = token.IndexOf('.');
-            if (firstDot < 0)
+            // HIGH-3: support both legacy 3-segment (uid.expiry.sig) and new 4-segment
+            // (uid.expiry.issuedAt.sig) token layouts. The last segment is always the signature.
+            string[] parts = token.Split('.');
+            if (parts.Length != 3 && parts.Length != 4)
                 return (null, false);
 
-            int secondDot = token.IndexOf('.', firstDot + 1);
-            if (secondDot < 0 || secondDot == token.Length - 1)
-                return (null, false);
-
-            string uidB64 = token.Substring(0, firstDot);
-            string expiryStr = token.Substring(firstDot + 1, secondDot - firstDot - 1);
-            string sigHex = token.Substring(secondDot + 1);
+            string uidB64 = parts[0];
+            string expiryStr = parts[1];
+            string issuedStr = parts.Length == 4 ? parts[2] : null;
+            string sigHex = parts[^1];
 
             if (sigHex.Length != SignatureHexLen)
                 return (null, false);
@@ -60,8 +144,12 @@ namespace Shared.Engine
             if (!long.TryParse(expiryStr, out long expiry))
                 return (null, false);
 
+            long issuedAt = 0;
+            if (issuedStr != null && !long.TryParse(issuedStr, out issuedAt))
+                return (null, false);
+
             // Verify signature before checking expiry to avoid timing oracle
-            string payload = $"{uidB64}.{expiryStr}";
+            string payload = issuedStr == null ? $"{uidB64}.{expiryStr}" : $"{uidB64}.{expiryStr}.{issuedStr}";
             byte[] expected = ComputeSignature(payload);
             byte[] actual;
 
@@ -84,12 +172,18 @@ namespace Shared.Engine
             if (uid == null)
                 return (null, false);
 
+            // HIGH-3: consult revocation list — a stolen admin cookie previously granted
+            // lifetime access to every user; now individual tokens can be killed without a rekey.
+            if (IsRevoked(uid, issuedAt))
+                return (null, false);
+
             return (uid, true);
         }
 
         public static bool IsHmacToken(string value)
         {
             // Minimum: 1-char base64url uid + '.' + 10-digit expiry + '.' + 40-char sig = 53
+            // Or 4-segment form: 1-char uid + '.' + expiry + '.' + issuedAt + '.' + 40-char sig
             if (string.IsNullOrEmpty(value) || value.Length < 53)
                 return false;
 
@@ -104,7 +198,7 @@ namespace Shared.Engine
                 }
             }
 
-            return dots == 2 && lastDot > 0 && (value.Length - lastDot - 1) == SignatureHexLen;
+            return (dots == 2 || dots == 3) && lastDot > 0 && (value.Length - lastDot - 1) == SignatureHexLen;
         }
 
         static byte[] ComputeSignature(string payload)

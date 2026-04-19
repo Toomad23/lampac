@@ -81,9 +81,38 @@ namespace Merchant.Controllers
             if (string.IsNullOrWhiteSpace(invoiceurl))
                 return Content("invoiceurl == null");
 
+            // HIGH-8: verify invoiceurl points at a b2pay.io host before 302-ing users. A MitM'd
+            // or compromised PSP response could redirect the buyer onto a phishing domain that
+            // inherits the trust of the legitimate checkout flow.
+            if (!IsAllowedB2payRedirect(invoiceurl))
+                return Content("invoiceurl host not allowed");
+
             IO.WriteAllText($"merchant/invoice/b2pay/{payment["order_number"]}", JsonConvert.SerializeObject(payment));
 
             return Redirect(invoiceurl);
+        }
+
+
+        // HIGH-8: allow-list for B2PAY redirects. Production checkout is pay.b2pay.io; the root
+        // apex + *.b2pay.io covers api/sandbox/alt subdomains without opening the gate to arbitrary
+        // third-party hosts the PSP may return.
+        static readonly string[] _b2payHosts = new[] { "b2pay.io" };
+
+        static bool IsAllowedB2payRedirect(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                return false;
+            if (parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+            string host = parsed.Host;
+            foreach (string allowed in _b2payHosts)
+            {
+                if (host.Equals(allowed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (host.EndsWith("." + allowed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
 

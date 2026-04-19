@@ -65,6 +65,8 @@ RUN curl -fSL -o /tmp/publish.zip https://github.com/lampac-talks/lampac/release
  && rm /tmp/publish.zip
 
 COPY --from=build /publish/ /home/
+RUN mkdir -p runtimes/references
+COPY --from=build /src/BaseModule/Controllers/ /home/basemod/Controllers/
 
 RUN mkdir -p torrserver \
  && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \

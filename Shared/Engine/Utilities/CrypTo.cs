@@ -77,9 +77,12 @@ namespace Shared.Engine
         #region md5 - string
         public static string md5(ReadOnlySpan<char> text)
         {
-            if (text.IsEmpty)
-                return string.Empty;
-
+            // Why: callers treat the output as a 32-char hex string and do things
+            // like `.Substring(0, 6)` for cache-key fingerprints (Filmix, Kodik,
+            // KinoPub, VoKino).  Returning string.Empty for empty input made those
+            // sites crash with ArgumentOutOfRangeException.  MD5 of an empty input
+            // is a well-defined standard value (d41d8cd98f00b204e9800998ecf8427e);
+            // computing it is cheap and removes the empty-string foot-gun.
             int byteCount = Encoding.UTF8.GetByteCount(text);
             if (byteCount < 512)
                 return md5Stack(text, byteCount);

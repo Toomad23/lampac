@@ -17,14 +17,34 @@ namespace Lampac.Controllers
         async public Task CMD(string key, string comand)
         {
             // /cmd/{key} executes operator-configured shell commands or arbitrary
-            // Roslyn C# scripts. This is effectively RCE-over-HTTP and must be
-            // gated: loopback OR the caller must present the admin passwd cookie.
-            string clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            bool isLocal = clientIp != null && Shared.Engine.Utilities.IPNetwork.IsLocalIp(clientIp);
+            // Roslyn C# scripts. This is effectively RCE-over-HTTP, so the gate
+            // is now ALWAYS the admin passwd cookie — proximity ("on the LAN" or
+            // "on loopback") is no longer sufficient on its own.
+            //
+            // Why not "loopback OR admin"?
+            //  * `IPNetwork.IsLocalIp` previously accepted the entire RFC1918/
+            //    ULA space — any 192.168.x.x peer satisfied it.
+            //  * Even tightening to `IsStrictLoopback` is insufficient under
+            //    Docker `network: host` (and similar shared-loopback setups):
+            //    every sibling container appears as 127.0.0.1 to Lampac, so a
+            //    compromise of any other container would yield RCE here.
+            //  * UseForwardedHeaders runs before MVC and may have rewritten
+            //    HttpContext.Connection.RemoteIpAddress from an X-Forwarded-For
+            //    header sent by a loopback reverse proxy / Tor hidden service /
+            //    local unix socket — meaning a "trust loopback" branch could be
+            //    spoofed by any caller able to reach the listener through such
+            //    a proxy. Dropping the IP gate altogether eliminates that risk.
+            //
+            // The cookie path itself defends against:
+            //  * `rootPasswd` empty/null (fresh install) — short-circuit the
+            //    FixedTimeEquals so an attacker can't authenticate by sending
+            //    an empty cookie before the operator has set a password;
+            //  * timing oracles — FixedTimeEquals is constant-time.
             bool isAdmin = HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
+                           && !string.IsNullOrEmpty(AppInit.rootPasswd)
                            && CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd);
 
-            if (!isLocal && !isAdmin)
+            if (!isAdmin)
             {
                 HttpContext.Response.StatusCode = 403;
                 return;

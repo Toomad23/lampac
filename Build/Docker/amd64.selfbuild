@@ -44,10 +44,11 @@ RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnet
 
 COPY --from=build /publish/ /home/
 
-# Upstream publish.zip bundles wwwroot, basemod, module and runtimes/references
-# that dotnet publish does not produce.  Fetch them from the latest release.
+# Upstream publish.zip bundles wwwroot, basemod, module, plugins and
+# runtimes/references that dotnet publish does not produce.  Fetch them
+# from the latest release.
 RUN curl -fSL -o /tmp/publish.zip https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip \
- && unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* -d /home/ \
+ && unzip -o /tmp/publish.zip wwwroot/* basemod/* module/* plugins/* -d /home/ \
  && mkdir -p runtimes/references \
  && rm /tmp/publish.zip
 

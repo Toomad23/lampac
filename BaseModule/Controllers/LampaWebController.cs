@@ -506,10 +506,9 @@ namespace Lampac.Controllers
 
             sb = sb.Replace("{ major: 0, minor: 0 }", $"{{major: {appversion}, minor: {minorversion}}}");
 
-            if (AppInit.modules != null && AppInit.modules.FirstOrDefault(i => i.dll == "JacRed.dll" && i.enable) != null)
-                sb = sb.Replace("{jachost}", Regex.Replace(host, "^https?://", ""));
-            else
-                sb = sb.Replace("{jachost}", "redapi.apn.monster");
+            sb = sb.Replace("{jachost}", AppInit.modules != null && AppInit.modules.FirstOrDefault(i => i.dll == "JacRed.dll" && i.enable) != null
+                ? Regex.Replace(host, "^https?://", "")
+                : string.Empty);
 
             #region full_btn_priority_hash
             string online_version = Regex.Match(FileCache.ReadAllText("plugins/online.js"), "version: '([^']+)'").Groups[1].Value;
@@ -654,10 +653,9 @@ namespace Lampac.Controllers
             sb = sb.Replace("{country}", requestInfo.Country)
                    .Replace("{localhost}", host);
 
-            if (AppInit.modules != null && AppInit.modules.FirstOrDefault(i => i.dll == "JacRed.dll" && i.enable) != null)
-                sb = sb.Replace("{jachost}", Regex.Replace(host, "^https?://", ""));
-            else
-                sb = sb.Replace("{jachost}", "redapi.apn.monster");
+            sb = sb.Replace("{jachost}", AppInit.modules != null && AppInit.modules.FirstOrDefault(i => i.dll == "JacRed.dll" && i.enable) != null
+                ? Regex.Replace(host, "^https?://", "")
+                : string.Empty);
 
             return Content(sb.ToString(), "application/javascript; charset=utf-8");
         }

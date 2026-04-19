@@ -120,28 +120,6 @@ namespace Shared.Engine.Online
                     streams.Reverse();
                     #endregion
 
-                    #region subtitle (off)
-                    //var subtitles = new SubtitleTpl();
-
-                    //try
-                    //{
-                    //    int subx = 1;
-                    //    var subs = pl.subtitle;
-                    //    if (subs != null)
-                    //    {
-                    //        foreach (string cc in subs.Split(","))
-                    //        {
-                    //            if (string.IsNullOrWhiteSpace(cc) || !cc.EndsWith(".srt"))
-                    //                continue;
-
-                    //            subtitles.Append($"sub #{subx}", onstreamfile.Invoke(cc));
-                    //            subx++;
-                    //        }
-                    //    }
-                    //}
-                    //catch { }
-                    #endregion
-
                     if (bwa || rhub)
                     {
                         mtpl.Append(name, streams[0].link.Replace("/manifest.m3u8", "/manifest"), "call");

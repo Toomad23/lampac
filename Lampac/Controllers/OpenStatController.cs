@@ -24,8 +24,18 @@ namespace Lampac.Controllers
         {
             ermsg = "Включите openstat в init.conf\n\n\"openstat\": {\n   \"enable\": true\n}";
 
-            if (!openstat.enable || (!string.IsNullOrEmpty(openstat.token) && openstat.token != HttpContext.Request.Query["token"].ToString()))
+            if (!openstat.enable)
                 return true;
+
+            if (!string.IsNullOrEmpty(openstat.token))
+            {
+                string provided = HttpContext.Request.Query["token"].ToString();
+                var a = System.Text.Encoding.UTF8.GetBytes(provided ?? string.Empty);
+                var b = System.Text.Encoding.UTF8.GetBytes(openstat.token ?? string.Empty);
+                bool ok = a.Length == b.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
+                if (!ok)
+                    return true;
+            }
 
             return false;
         }

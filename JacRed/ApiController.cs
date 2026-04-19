@@ -19,9 +19,21 @@ namespace JacRed.Controllers
         [Route("api/v1.0/conf")]
         public JsonResult JacConf(string apikey)
         {
+            bool apikeyValid;
+            if (string.IsNullOrWhiteSpace(AppInit.conf.apikey))
+            {
+                apikeyValid = true;
+            }
+            else
+            {
+                var a = System.Text.Encoding.UTF8.GetBytes(apikey ?? string.Empty);
+                var b = System.Text.Encoding.UTF8.GetBytes(AppInit.conf.apikey ?? string.Empty);
+                apikeyValid = a.Length == b.Length && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
+            }
+
             return Json(new
             {
-                apikey = string.IsNullOrWhiteSpace(AppInit.conf.apikey) || apikey == AppInit.conf.apikey
+                apikey = apikeyValid
             });
         }
         #endregion

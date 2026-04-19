@@ -334,7 +334,8 @@ namespace Lampac.Controllers
 ";
 
             string conf = IO.File.Exists("sync.conf") ? IO.File.ReadAllText("sync.conf") : string.Empty;
-            return Content(html.Replace("{conf}", conf), contentType: "text/html; charset=utf-8");
+            string confEncoded = System.Text.Encodings.Web.HtmlEncoder.Default.Encode(conf);
+            return Content(html.Replace("{conf}", confEncoded), contentType: "text/html; charset=utf-8");
         }
 
 

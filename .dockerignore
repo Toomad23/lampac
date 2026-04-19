@@ -1,0 +1,14 @@
+.git/
+.github/
+.vscode/
+.vs/
+**/*.pdb
+**/bin/
+**/obj/
+*.md
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose*.yml
+node_modules/
+TestResults/

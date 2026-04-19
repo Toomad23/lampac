@@ -105,7 +105,7 @@ namespace Jackett
 
         public string merge = "jackett";
 
-        public string webApiHost = "http://redapi.cfhttp.top";
+        public string webApiHost = "";
 
         public string filter { get; set; }
 

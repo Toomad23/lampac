@@ -2,7 +2,7 @@
 {
     public class RedConf
     {
-        public string syncapi = "http://redapi.cfhttp.top";
+        public string syncapi = "";
 
         public int syntime = 60;
 

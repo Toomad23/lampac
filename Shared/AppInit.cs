@@ -646,7 +646,7 @@ namespace Shared
             spider = true, spiderName = "Spider",
             component = "lampac", name = "Lampac", description = "Плагин для просмотра онлайн сериалов и фильмов",
             version = true, btn_priority_forced = true, showquality = true,
-            with_search = new List<string>() { "kinotochka", "kinobase", "kinopub", "lumex", "filmix", "filmixtv", "fxapi", "redheadsound", "animevost", "animego", "animedia", "animebesst", "anilibria", "aniliberty", "rezka", "rhsprem", "kodik", "remux", "animelib", "kinoukr", "rc/filmix", "rc/fxapi", "rc/rhs", "vcdn", "videocdn", "lumex", "collaps", "collaps-dash", "vdbmovies", "hdvb", "alloha", "veoveo", "rutubemovie", "vkmovie" }
+            with_search = new List<string>() { "kinotochka", "kinobase", "kinopub", "lumex", "filmix", "filmixtv", "fxapi", "redheadsound", "animevost", "animego", "animedia", "animebesst", "anilibria", "aniliberty", "rezka", "rhsprem", "kodik", "remux", "animelib", "kinoukr", "rc/filmix", "rc/fxapi", "rc/rhs", "vcdn", "videocdn", "collaps", "collaps-dash", "vdbmovies", "hdvb", "alloha", "veoveo", "rutubemovie", "vkmovie" }
         };
 
         public SisiConf sisi { get; set; } = new SisiConf()
@@ -964,7 +964,7 @@ namespace Shared
 
         public PidTorSettings PidTor { get; set; } = new PidTorSettings()
         {
-            enable = false, redapi = "http://redapi.cfhttp.top",
+            enable = false, redapi = "",
             min_sid = 15, emptyVoice = true
         };
 

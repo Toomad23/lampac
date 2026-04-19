@@ -112,11 +112,7 @@ namespace JacRed.Controllers
 
                 string memoryKey = $"{ModInit.conf.typesearch}:{qCap}:{rqnum}:{tCap}:{toCap}:{year}:{is_serial}";
                 if (memoryKey.Length > 256)
-                {
-                    using var md5 = System.Security.Cryptography.MD5.Create();
-                    byte[] hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(memoryKey));
-                    memoryKey = $"{ModInit.conf.typesearch}:md5:" + Convert.ToHexString(hash);
-                }
+                    memoryKey = $"{ModInit.conf.typesearch}:md5:" + CrypTo.md5(memoryKey);
 
                 if (!hybridCache.TryGetValue(memoryKey, out List<TorrentDetails> _redCache, inmemory: false))
                 {

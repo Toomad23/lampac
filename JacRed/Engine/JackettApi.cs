@@ -36,11 +36,7 @@ namespace JacRed.Engine
 
             string mkey = $"JackettApi:{qKey}:{tKey}:{toKey}:{year}:{is_serial}:{catKey}";
             if (mkey.Length > 256)
-            {
-                using var md5 = System.Security.Cryptography.MD5.Create();
-                byte[] keyHash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(mkey));
-                mkey = "JackettApi:md5:" + Convert.ToHexString(keyHash);
-            }
+                mkey = "JackettApi:md5:" + CrypTo.md5(mkey);
 
             if (hybridCache.TryGetValue(mkey, out List<TorrentDetails> cache, inmemory: false))
                 return cache;

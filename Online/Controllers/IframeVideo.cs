@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Shared.Models.Online.Settings;
 
@@ -94,7 +95,19 @@ namespace Online.Controllers
             if (play)
                 return RedirectToPlay(url);
 
-            return Content("{\"method\":\"play\",\"url\":\"" + url + "\",\"title\":\"" + (title ?? original_title) + "\"}", "application/json; charset=utf-8");
+            // Why: `title`/`original_title` arrive from the unauthenticated
+            // query string and were interpolated directly into a JSON string
+            // literal — `?title=foo"` would break out of the JSON value and
+            // let the caller inject arbitrary keys (and, when the response is
+            // sniffed/rendered as HTML by a downstream consumer, script). Use
+            // JsonConvert to serialise the whole payload so every field is
+            // escaped according to JSON string rules.
+            return Content(JsonConvert.SerializeObject(new
+            {
+                method = "play",
+                url,
+                title = title ?? original_title
+            }), "application/json; charset=utf-8");
         }
         #endregion
 

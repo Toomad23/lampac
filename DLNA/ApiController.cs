@@ -337,6 +337,17 @@ namespace DLNA.Controllers
             if (!path.StartsWith("http"))
                 return (path, null);
 
+            // SSRF guard: `path` is the user-supplied tracker URL from
+            // /dlna/tracker/show and /dlna/tracker/download. Without a
+            // private-IP gate it would happily fetch http://127.0.0.1/,
+            // 169.254.169.254 cloud metadata, intranet admin UIs, etc., and
+            // reflect either the bencoded payload or a 30x Location header
+            // (containing magnet:) back to the caller. Reject literals that
+            // resolve to private/loopback/link-local space; configured
+            // upstream tracker mirrors are public hostnames.
+            if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(path))
+                return (null, null);
+
             string memkey = $"DLNAController:getTorrent:{path}";
             if (!memoryCache.TryGetValue(memkey, out (string magnet, byte[] torrent) cache))
             {

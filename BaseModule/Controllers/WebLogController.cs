@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using Shared;
 using System.Web;
 
@@ -21,8 +22,23 @@ namespace Lampac.Controllers
             // pattern / receive are reflected into HTML attributes below; encode
             // them before interpolation to prevent reflected XSS when weblog.token
             // is unset (anyone can hit this endpoint).
-            string safePattern = HttpUtility.HtmlAttributeEncode(pattern ?? "");
+            //
+            // Why HtmlEncode and not HtmlAttributeEncode? The pattern is spliced
+            // into a *single-quoted* attribute (`value='...'`), and
+            // HtmlAttributeEncode only escapes `<`, `&`, and `"` — a single
+            // quote in `pattern` would close the attribute and let the caller
+            // inject new attributes / event handlers. HtmlEncode also encodes
+            // `'` to `&#39;`.
+            string safePattern = HttpUtility.HtmlEncode(pattern ?? "");
             string safeReceive = receive == "request" ? "request" : "http";
+
+            // Why: `token` is also reflected, but into JS string literals inside
+            // <script> (see nwsCode/signalCode). HtmlAttributeEncode is the wrong
+            // encoder for that context — `</script>` and backslash sequences pass
+            // through unchanged. Use JSON serialisation to produce a properly
+            // escaped JS string (including \u003c for `<`, which prevents
+            // `</script>` breakouts in HTML inline-script contexts).
+            string safeTokenJs = JsonConvert.ToString(token ?? "", '"', StringEscapeHandling.EscapeHtml);
 
             string html = $@"<!DOCTYPE html>
 <html>
@@ -122,7 +138,7 @@ namespace Lampac.Controllers
             }}
         }}
 
-        {(AppInit.conf.WebSocket.type == "signalr" ? signalCode(token) : nwsCode(token))}
+        {(AppInit.conf.WebSocket.type == "signalr" ? signalCode(safeTokenJs) : nwsCode(safeTokenJs))}
     </script>
 </body>
 </html>";
@@ -131,7 +147,11 @@ namespace Lampac.Controllers
         }
 
 
-        static string nwsCode(string token) => $@"
+        // `tokenJsLiteral` is already a fully-formed JS string literal
+        // (JSON-encoded, including the surrounding double quotes), so it is
+        // safe to splice straight into the script body without further
+        // single-quoting.
+        static string nwsCode(string tokenJsLiteral) => $@"
 const client = new NativeWsClient(""/nws"", {{
     autoReconnect: true,
     reconnectDelay: 2000,
@@ -139,7 +159,7 @@ const client = new NativeWsClient(""/nws"", {{
     onOpen: function () {{
         send('WebSocket connected');
         outageReported = false;
-        client.invoke('RegistryWebLog', '{token}');
+        client.invoke('RegistryWebLog', {tokenJsLiteral});
     }},
 
     onClose: function () {{
@@ -158,7 +178,7 @@ client.on('Receive', function (message, e) {{
 client.connect();
 ";
 
-        static string signalCode(string token) => $@"
+        static string signalCode(string tokenJsLiteral) => $@"
 const hubConnection = new signalR.HubConnectionBuilder()
     .withUrl('/ws')
     .build();
@@ -173,7 +193,7 @@ function startConnection() {{
             if (reconnectAttempts != 0)
                 send('WebSocket connected');
             reconnectAttempts = 0; // Reset counter on successful connection
-            hubConnection.invoke('RegistryWebLog', '{token}');
+            hubConnection.invoke('RegistryWebLog', {tokenJsLiteral});
         }})
         .catch(function (err) {{
             console.log(`${{err.toString()}}\n\nAttempting to reconnect (${{reconnectAttempts}}/${{maxReconnectAttempts}})...`);

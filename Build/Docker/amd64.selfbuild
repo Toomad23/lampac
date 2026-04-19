@@ -35,7 +35,8 @@ RUN dotnet publish Lampac/Lampac.csproj -c Release -o /publish --no-restore \
            /publish/runtimes/linux-arm /publish/runtimes/linux-arm64 \
            /publish/runtimes/linux-musl-arm64 /publish/runtimes/linux-musl-x64 \
            /publish/module/runtimes \
- && touch /publish/isdocker
+ && touch /publish/isdocker \
+ && find /publish -name '*.pdb' -delete
 
 # ---------- runtime stage ----------
 FROM debian:12.5-slim
@@ -88,5 +89,11 @@ RUN curl -fSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releas
  && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-extract
 
 RUN echo '{"chromium":{"executablePath":"/usr/bin/chromium"}}' > init.conf
+
+RUN find /home -name '*.pdb' -delete
+
+RUN useradd -u 1000 -m app || true
+RUN chown -R 1000:1000 /home
+USER 1000:1000
 
 ENTRYPOINT ["/usr/share/dotnet/dotnet", "Lampac.dll"]

@@ -529,7 +529,9 @@ namespace Lampac.Controllers
                     #region htmlSuccess
 
                     #region shared_passwd
-                    string shared_passwd = CrypTo.unic(8).ToLower();
+                    byte[] _buf = new byte[32];
+                    System.Security.Cryptography.RandomNumberGenerator.Fill(_buf);
+                    string shared_passwd = Convert.ToHexString(_buf).ToLower();
 
                     UpdateInitConf(j =>
                     {

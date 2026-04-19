@@ -16,13 +16,14 @@ namespace Tracks.Engine
         private readonly CancellationTokenSource _cts = new();
         private int _lastSegmentIndex = -1;
 
-        public TranscodingJob(string id, string streamId, string outputDirectory, Process process, TranscodingStartContext context)
+        public TranscodingJob(string id, string streamId, string outputDirectory, Process process, TranscodingStartContext context, string ownerUid = null)
         {
             Id = id;
             StreamId = streamId;
             OutputDirectory = outputDirectory;
             Process = process;
             Context = context;
+            OwnerUid = ownerUid;
             StartedUtc = DateTime.UtcNow;
             LastAccessUtc = StartedUtc;
         }
@@ -36,6 +37,8 @@ namespace Tracks.Engine
         public Process Process { get; }
 
         public TranscodingStartContext Context { get; }
+
+        public string OwnerUid { get; }
 
         public DateTime StartedUtc { get; }
 

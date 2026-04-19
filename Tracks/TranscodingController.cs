@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using Shared;
 using Shared.Engine;
 using Shared.Engine.Utilities;
+using Shared.Models;
 using Shared.Models.AppConf;
 using Shared.Models.Templates;
 using System;
@@ -24,6 +25,8 @@ namespace Tracks.Controllers
     {
         #region static
         readonly TranscodingService _service = TranscodingService.Instance;
+
+        string CurrentUserUid() => HttpContext?.Features?.Get<RequestModel>()?.user_uid;
 
         static readonly FileExtensionContentTypeProvider provider = new FileExtensionContentTypeProvider()
         {
@@ -75,14 +78,14 @@ namespace Tracks.Controllers
 
             var defaults = AppInit.conf.transcoding;
 
-            var (job, error) = await _service.Start(new TranscodingStartRequest() 
-            { 
+            var (job, error) = await _service.Start(new TranscodingStartRequest()
+            {
                 src = src,
                 live = live,
                 subtitles = subtitles,
                 audio = new TranscodingAudioOptions() { index = a },
                 hls = new TranscodingHlsOptions() { seek = s }
-            });
+            }, CurrentUserUid());
 
             if (job == null)
                 return BadRequest(new { error });
@@ -101,7 +104,7 @@ namespace Tracks.Controllers
             if (request == null)
                 return BadRequest(new { error = "Request body is required" });
 
-            var (job, error) = await _service.Start(request);
+            var (job, error) = await _service.Start(request, CurrentUserUid());
             if (job == null)
                 return BadRequest(new { error });
 
@@ -122,7 +125,7 @@ namespace Tracks.Controllers
             if (!AppInit.conf.transcoding.enable || !ModInit.IsInitialization)
                 return BadRequest(new { error = "Transcoding disabled" });
 
-            if (!_service.TryResolveJob(streamId, out var job))
+            if (!_service.TryResolveOwnedJob(streamId, CurrentUserUid(), out var job))
                 return NotFound();
 
             if (!job.Context.live)
@@ -131,7 +134,7 @@ namespace Tracks.Controllers
             if (ss < 0)
                 return BadRequest(new { error = "ss must be greater or equal 0" });
 
-            var (success, error) = await _service.SeekAsync(streamId, ss);
+            var (success, error) = await _service.SeekAsync(streamId, ss, ownerUid: CurrentUserUid(), enforceOwner: true);
             if (!success)
                 return BadRequest(new { error });
 
@@ -448,7 +451,7 @@ namespace Tracks.Controllers
             if (!AppInit.conf.transcoding.enable || !ModInit.IsInitialization)
                 return BadRequest(new { error = "Transcoding disabled" });
 
-            if (!_service.TryResolveJob(streamId, out var job))
+            if (!_service.TryResolveOwnedJob(streamId, CurrentUserUid(), out var job))
                 return NotFound();
 
             _service.Touch(job);
@@ -463,7 +466,7 @@ namespace Tracks.Controllers
             if (!AppInit.conf.transcoding.enable || !ModInit.IsInitialization)
                 return BadRequest(new { error = "Transcoding disabled" });
 
-            var stopped = await _service.StopAsync(streamId);
+            var stopped = await _service.StopAsync(streamId, CurrentUserUid());
             return stopped ? Ok() : NotFound();
         }
         #endregion
@@ -475,7 +478,7 @@ namespace Tracks.Controllers
             if (!AppInit.conf.transcoding.enable || !ModInit.IsInitialization)
                 return BadRequest(new { error = "Transcoding disabled" });
 
-            if (!_service.TryResolveJob(streamId, out var job))
+            if (!_service.TryResolveOwnedJob(streamId, CurrentUserUid(), out var job))
                 return NotFound();
 
             var now = DateTime.UtcNow;

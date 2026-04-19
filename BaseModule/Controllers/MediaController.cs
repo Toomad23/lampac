@@ -100,7 +100,56 @@ namespace Lampac.Controllers
                 ? CreateImageProxy(url, request.width, request.height, headers, proxy)
                 : HostStreamProxy(CreateStreamSettings(request), url, headers, proxy);
 
+            if (!IsSafeRedirectTarget(location))
+                return JsonError("redirect blocked", 400);
+
             return Redirect(location);
+        }
+
+        bool IsSafeRedirectTarget(string location)
+        {
+            if (string.IsNullOrEmpty(location))
+                return false;
+
+            // When serverproxy is enabled, the stream/image URL is rewritten to our own host,
+            // so a same-origin relative or absolute URL on this host is acceptable.
+            if (AppInit.conf.serverproxy.enable)
+            {
+                if (location.StartsWith("/"))
+                    return true;
+
+                if (!Uri.TryCreate(location, UriKind.Absolute, out var proxied))
+                    return false;
+
+                if (!string.IsNullOrEmpty(host) && Uri.TryCreate(host, UriKind.Absolute, out var selfUri)
+                    && string.Equals(proxied.Host, selfUri.Host, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            // Otherwise, only allow HTTPS targets whose host is explicitly allow-listed.
+            if (!Uri.TryCreate(location, UriKind.Absolute, out var target))
+                return false;
+
+            if (target.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            var hosts = AppInit.conf.media?.hosts;
+            if (hosts == null || hosts.Length == 0)
+                return false;
+
+            foreach (string allowed in hosts)
+            {
+                if (string.IsNullOrWhiteSpace(allowed))
+                    continue;
+
+                string a = allowed.Trim().TrimStart('.').ToLowerInvariant();
+                string h = target.Host.ToLowerInvariant();
+
+                if (h == a || h.EndsWith("." + a))
+                    return true;
+            }
+
+            return false;
         }
 
         BaseSettings CreateStreamSettings(MediaRequestBase request)

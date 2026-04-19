@@ -10,6 +10,10 @@ namespace Shared.Engine.Online
 {
     public struct VideoCDNInvoke
     {
+        // Compiled regex — lifted from per-request allocation
+        static readonly Regex _optionRegex      = new Regex(@"<option +value=""([0-9]+)""[^>]+>([^<]+)</option>", RegexOptions.Compiled);
+        static readonly Regex _stripWhitespace  = new Regex(@"[\n\r\t]+", RegexOptions.Compiled);
+
         #region VideoCDNInvoke
         string host, scheme;
         string iframeapihost;
@@ -120,7 +124,7 @@ namespace Shared.Engine.Online
             {
                 result.voices.TryAdd("0", "По умолчанию");
 
-                var match = new Regex("<option +value=\"([0-9]+)\"[^>]+>([^<]+)</option>").Match(Regex.Replace(content, "[\n\r\t]+", ""));
+                var match = _optionRegex.Match(_stripWhitespace.Replace(content, ""));
                 while (match.Success)
                 {
                     string translation_id = match.Groups[1].Value;

@@ -89,7 +89,7 @@ namespace Shared.Engine
 
                     if (Regex.IsMatch(url, p.pattern, RegexOptions.IgnoreCase))
                     {
-                        string proxyip = p.list.OrderBy(a => Guid.NewGuid()).First();
+                        string proxyip = p.list[Random.Shared.Next(p.list.Length)];
 
                         NetworkCredential credentials = null;
 

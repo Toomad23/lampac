@@ -543,6 +543,16 @@ namespace Lampac
             HybridFileCache.Configure(memory);
             ProxyManager.Configure(memory);
 
+            // Why (round5 HIGH-6): HMAC-signed admin endpoints require rootPasswd.
+            // Program.cs generates one if the `passwd` file is missing, but a
+            // deployment that explicitly wiped it (or mapped an empty volume over
+            // it) would silently fall back to the deterministic "fallback|hmacauth"
+            // key in previous versions. HmacAuth.cs now fail-closes, so log a
+            // single error here so the misconfiguration is loud rather than
+            // manifesting as mysterious 401s from /merchant, /nws, and /ts.
+            if (!Shared.Engine.HmacAuth.IsConfigured)
+                Console.Error.WriteLine("[security] HMAC-signed admin endpoints are DISABLED: AppInit.rootPasswd is empty. Set it via the `passwd` file or environment.");
+
             Http.httpClientFactory = httpClientFactory;
 
             if (mods.nws)

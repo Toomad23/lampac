@@ -65,8 +65,22 @@ namespace TorrServer.Controllers
         [Route("ts/static/js/{suffix}")]
         async public Task<ActionResult> Main()
         {
-            string html = null;
             string pathRequest = Regex.Replace(HttpContext.Request.Path.Value, "^/ts", "");
+
+            // Why (round5 HIGH-4): the TorrServer admin UI and its JS bundle used to
+            // be proxied anonymously. An unauthenticated caller could load /ts and
+            // /ts/static/js/* without any auth — defeating the PR #44 /ts/settings
+            // lockdown because the UI itself was still reachable for reconnaissance.
+            // Gate on admin cookie OR strict loopback OR signed HMAC.  Return 404
+            // (not 401) when unauthenticated so the existence of the TorrServer
+            // proxy cannot be probed by unauthenticated clients.
+            if (AppInit.conf.accsdb.enable && !await IsAdminOrLoopbackAsync().ConfigureAwait(false))
+            {
+                HttpContext.Response.StatusCode = 404;
+                return new EmptyResult();
+            }
+
+            string html = null;
 
             try
             {
@@ -129,25 +143,6 @@ namespace TorrServer.Controllers
                     Console.WriteLine("[TorrServer] defaultPasswd is not set or shorter than 8 chars — /ts auth disabled. Set TorrServerConf.defaultPasswd in init.conf.");
                 }
 
-                #region Обработка stream потока
-                if (HttpContext.Request.Method == "GET" && Regex.IsMatch(HttpContext.Request.Path.Value, "^/ts/(stream|play)"))
-                {
-                    await TorAPI().ConfigureAwait(false);
-                    return;
-
-                    //if (ModInit.clientIps.Contains(HttpContext.Connection.RemoteIpAddress.ToString()))
-                    //{
-                    //    await TorAPI();
-                    //    return;
-                    //}
-                    //else
-                    //{
-                    //    HttpContext.Response.StatusCode = 404;
-                    //    return;
-                    //}
-                }
-                #endregion
-
                 #region Access-Control-Request-Headers
                 if (HttpContext.Request.Method == "OPTIONS" && HttpContext.Request.Headers.TryGetValue("Access-Control-Request-Headers", out var AccessControl) && AccessControl == "authorization")
                 {
@@ -155,6 +150,26 @@ namespace TorrServer.Controllers
                     return;
                 }
                 #endregion
+
+                // Why (round5 HIGH-3): the GET /ts/stream and /ts/play branch used to
+                // return upstream bytes *before* the auth gate below was evaluated —
+                // any unauthenticated caller could pull media directly from the
+                // TorrServer proxy. The gate is now applied up-front: accsdb user
+                // (Basic auth), admin cookie, strict loopback, or signed HMAC. Matches
+                // the treatment /ts/torrents already receives.
+                bool isStreamPath = HttpContext.Request.Method == "GET" &&
+                                    Regex.IsMatch(HttpContext.Request.Path.Value, "^/ts/(stream|play)");
+
+                if (isStreamPath)
+                {
+                    if (await IsAdminOrLoopbackAsync().ConfigureAwait(false))
+                    {
+                        await TorAPI().ConfigureAwait(false);
+                        return;
+                    }
+                    // fall through into Basic-auth accsdb check below; if that also
+                    // fails, the 401 at the end of this block is returned.
+                }
 
                 if (HttpContext.Request.Headers.TryGetValue("Authorization", out var Authorization))
                 {
@@ -216,6 +231,32 @@ namespace TorrServer.Controllers
             }
         }
 
+        // Why (round5): shared admin gate reused by Main() and the /ts/stream|/ts/play
+        // branch of Index(). Accepts strict loopback, admin cookie (rootPasswd), or a
+        // valid X-Signature/X-Timestamp HMAC (signs body). Deliberately does NOT accept
+        // accsdb Basic auth — those credentials are validated separately in Index().
+        async Task<bool> IsAdminOrLoopbackAsync()
+        {
+            var connFeat = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();
+            string remoteIp = connFeat?.RemoteIpAddress?.ToString()
+                              ?? HttpContext.Connection.RemoteIpAddress?.ToString();
+
+            if (Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp))
+                return true;
+
+            if (HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
+                && !string.IsNullOrEmpty(AppInit.rootPasswd)
+                && Shared.Engine.CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd))
+            {
+                return true;
+            }
+
+            if (await Shared.Engine.HmacAuth.ValidateAsync(HttpContext.Request).ConfigureAwait(false))
+                return true;
+
+            return false;
+        }
+
         async public Task TorAPI(AccsUser user = null)
         {
             string pathRequest = Regex.Replace(HttpContext.Request.Path.Value, "^/ts", "");
@@ -259,7 +300,7 @@ namespace TorrServer.Controllers
                             HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
                             && !string.IsNullOrEmpty(AppInit.rootPasswd)
                             && Shared.Engine.CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd);
-                        bool isHmac = Shared.Engine.HmacAuth.Validate(HttpContext.Request);
+                        bool isHmac = await Shared.Engine.HmacAuth.ValidateAsync(HttpContext.Request).ConfigureAwait(false);
 
                         bool allowMutation;
                         if (ModInit.conf.rdb)

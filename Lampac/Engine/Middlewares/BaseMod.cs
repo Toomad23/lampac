@@ -35,8 +35,15 @@ namespace Lampac.Engine.Middlewares
             {
                 if (Regex.IsMatch(context.Request.Path.Value, "^/(ffprobe|transcoding|dlna|admin)", RegexOptions.IgnoreCase))
                 {
-                    string ip = context.Connection.RemoteIpAddress.ToString();
-                    if (!Shared.Engine.Utilities.IPNetwork.IsLocalIp(ip))
+                    // Why (round5.4): IsLocalIp trusts the entire RFC1918/ULA
+                    // range (10/8, 172.16/12, 192.168/16, fc00::/7), so any LAN
+                    // peer would satisfy the CVE-2025-55315 workaround and hit
+                    // the vulnerable /ffprobe, /transcoding, /dlna, /admin
+                    // surfaces on unpatched runtimes. The workaround must only
+                    // permit true loopback (127.0.0.0/8 / ::1); mirrors the
+                    // RequestInfo.cs pattern (line 73).
+                    string ip = context.Connection.RemoteIpAddress?.ToString();
+                    if (!Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(ip))
                     {
                         context.Response.StatusCode = 400;
                         return context.Response.WriteAsync("Please update dotnet\nhttps://github.com/dotnet/core/blob/main/release-notes/9.0/9.0.12/9.0.113.md", context.RequestAborted);

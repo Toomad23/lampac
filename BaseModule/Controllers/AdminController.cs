@@ -24,7 +24,13 @@ namespace Lampac.Controllers
 
             if (AppInit.rootPasswd == "termux")
             {
-                HttpContext.Response.Cookies.Append("passwd", "termux");
+                HttpContext.Response.Cookies.Append("passwd", "termux", new Microsoft.AspNetCore.Http.CookieOptions
+                {
+                    HttpOnly = true,
+                    SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict,
+                    Secure = HttpContext.Request.IsHttps,
+                    Path = "/admin"
+                });
                 return true;
             }
 
@@ -140,6 +146,7 @@ namespace Lampac.Controllers
                 {
                     HttpOnly = true,
                     SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict,
+                    Secure = HttpContext.Request.IsHttps,
                     Path = "/admin"
                 });
                 return renderAdmin();

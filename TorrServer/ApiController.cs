@@ -33,8 +33,48 @@ namespace TorrServer.Controllers
         {
             string file = FileCache.ReadAllText("plugins/ts.js").Replace("{localhost}", Regex.Replace(host, "^https?://", ""));
 
-            if (!string.IsNullOrEmpty(token))
-                file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_login'[^\n\r]+", $"Lampa.Storage.set('torrserver_login','{HttpUtility.UrlEncode(token)}');");
+            // Why (round5): upstream ts.js hardcodes `Lampa.Storage.set('torrserver_password','ts')`,
+            // which clobbers any user-saved TS password on every plugin reload. After PR #42 made
+            // the legacy 'ts' default fail-closed on the server side, this bricked the Lampa Android
+            // client — auth kept reverting to 'ts' on every app start and 401'd. Inject the real
+            // defaultPasswd only when the request identifies a valid accsdb user (via RequestInfo
+            // middleware, or a base64-decoded `email=` query the upstream Android client sends but
+            // the middleware does not recognise). Anonymous callers still see the inert 'ts'
+            // literal, so the shared secret is not harvestable without knowledge of a whitelisted
+            // email. On installs with accsdb.enable=false, behaviour is unchanged.
+            AccsUser user = requestInfo.user;
+            if (user == null && AppInit.conf.accsdb.enable)
+            {
+                string emailB64 = HttpContext.Request.Query["email"].ToString();
+                if (!string.IsNullOrEmpty(emailB64))
+                {
+                    try
+                    {
+                        string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(emailB64));
+                        user = AppInit.conf.accsdb.findUser(decoded);
+                    }
+                    catch { /* malformed base64 — treat as anonymous */ }
+                }
+            }
+
+            bool isAuthed = user != null && !user.ban && user.expires > DateTime.UtcNow;
+            string tsPasswd = ModInit.conf?.defaultPasswd;
+
+            if (isAuthed && !string.IsNullOrEmpty(tsPasswd) && tsPasswd.Length >= 8)
+            {
+                file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_password'[^\n\r]+",
+                    $"Lampa.Storage.set('torrserver_password','{HttpUtility.JavaScriptStringEncode(tsPasswd)}');");
+
+                string login = !string.IsNullOrEmpty(token) ? token : user.id;
+                file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_login'[^\n\r]+",
+                    $"Lampa.Storage.set('torrserver_login','{HttpUtility.JavaScriptStringEncode(login)}');");
+            }
+            else if (!string.IsNullOrEmpty(token))
+            {
+                // Legacy back-compat path: admin-provided token on the route.
+                file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_login'[^\n\r]+",
+                    $"Lampa.Storage.set('torrserver_login','{HttpUtility.UrlEncode(token)}');");
+            }
 
             return Content(file, "application/javascript; charset=utf-8");
         }

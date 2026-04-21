@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using IO = System.IO.File;
 
 namespace Merchant.Controllers
@@ -40,13 +41,23 @@ namespace Merchant.Controllers
         }
 
 
+        // Why (round5.5): transid is generated as Guid.NewGuid("N") (32 hex chars). Binding the callback
+        // param as `long` silently coerced any non-numeric value to 0, so every legitimate callback
+        // failed invoice lookup and any crafted `MERCHANT_ORDER_ID=0` could collide against a
+        // zero-filename on disk. Bind as string and enforce the exact 32-hex-char shape before any
+        // filesystem / signature work.
+        static readonly Regex rxFreeKassaOrderId = new Regex("^[0-9a-f]{32}$", RegexOptions.Compiled);
+
         [HttpPost]
         [AllowAnonymous]
         [Route("freekassa/callback")]
-        public ActionResult Callback(string AMOUNT, long MERCHANT_ORDER_ID, string SIGN)
+        public ActionResult Callback(string AMOUNT, string MERCHANT_ORDER_ID, string SIGN)
         {
             if (!AppInit.conf.Merchant.FreeKassa.enable)
                 return StatusCode(403);
+
+            if (string.IsNullOrEmpty(MERCHANT_ORDER_ID) || !rxFreeKassaOrderId.IsMatch(MERCHANT_ORDER_ID))
+                return StatusCode(400);
 
             // Why (M-28): Consolidated early return — previously a missing invoice file returned 403 immediately
             // while a present-but-bad-signature path ran MD5 + FixedTimeEquals. That timing delta leaks whether
@@ -80,7 +91,7 @@ namespace Merchant.Controllers
                 return StatusCode(403);
 
             string email = IO.ReadAllText(invoicePath);
-            PayConfirm(email, "freekassa", MERCHANT_ORDER_ID.ToString());
+            PayConfirm(email, "freekassa", MERCHANT_ORDER_ID);
 
             return Content("YES");
         }

@@ -174,22 +174,40 @@ namespace Shared
 
             AccsToken.Init(conf.accsdb.hmac_secret);
 
+            // Why (round5.3): Newtonsoft JSON deserialises bare "2026-01-01" or
+            // local-kind "2026-01-01T00:00:00" with DateTimeKind.Unspecified /
+            // Local, but Accsdb compares `user.expires > DateTime.UtcNow`.
+            // Mixing Kinds produces silent off-by-TZ grants/denies. Normalise
+            // every AccsUser.expires to UTC at the single deserialization entry
+            // point so downstream comparisons are always apples-to-apples.
+            if (conf.accsdb?.users != null)
+            {
+                foreach (var u in conf.accsdb.users)
+                {
+                    if (u == null) continue;
+                    if (u.expires.Kind != DateTimeKind.Utc)
+                        u.expires = DateTime.SpecifyKind(u.expires, DateTimeKind.Utc);
+                }
+            }
+
             #region accounts
             if (conf.accsdb.accounts != null)
             {
                 foreach (var u in conf.accsdb.accounts)
                 {
+                    var expires = u.Value.Kind == DateTimeKind.Utc ? u.Value : DateTime.SpecifyKind(u.Value, DateTimeKind.Utc);
+
                     if (conf.accsdb.findUser(u.Key) is AccsUser user)
                     {
-                        if (u.Value > user.expires)
-                            user.expires = u.Value;
+                        if (expires > user.expires)
+                            user.expires = expires;
                     }
                     else
                     {
                         conf.accsdb.users.Add(new AccsUser()
                         {
                             id = u.Key.ToLowerAndTrim(),
-                            expires = u.Value
+                            expires = expires
                         });
                     }
                 }

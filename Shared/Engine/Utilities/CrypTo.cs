@@ -292,11 +292,16 @@ namespace Shared.Engine
         static string ArrayListToNumber => "1234567890";
         public static string unic(int size = 8, bool IsNumberCode = false, string addArrayList = null)
         {
+            // Why: these "example" credentials surface as shared_passwd samples,
+            // merchant codes, and throwaway tokens in admin HTML. Random.Shared
+            // is a PRNG seeded from Environment.TickCount and is trivially
+            // predictable. Use the OS CSPRNG so a generated value cannot be
+            // guessed from another generated in the same process.
             StringBuilder array = new StringBuilder(size);
             string list = IsNumberCode ? ArrayListToNumber : ArrayList + addArrayList;
 
             for (int i = 0; i < size; i++)
-                array.Append(list[Random.Shared.Next(0, list.Length)]);
+                array.Append(list[System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, list.Length)]);
 
             return array.ToString();
         }

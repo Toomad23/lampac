@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 using Newtonsoft.Json.Linq;
 using Shared;
 using Shared.Engine;
@@ -65,13 +66,24 @@ namespace TorrServer.Controllers
                 file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_password'[^\n\r]+",
                     $"Lampa.Storage.set('torrserver_password','{HttpUtility.JavaScriptStringEncode(tsPasswd)}');");
 
-                // Why: Lampa Android builds external-player URLs as http://login:pass@host/...
-                // A login that itself contains '@' (e.g. an email) produces two '@' in the
-                // userinfo component and breaks URL parsers like VLC. Percent-encode the
-                // login so the userinfo has a single '@' delimiter; the Basic-auth handler
-                // below UnescapeDataString's the decoded username before findUser() so both
-                // encoded and raw forms authenticate identically.
-                string login = !string.IsNullOrEmpty(token) ? token : Uri.EscapeDataString(user.id ?? string.Empty);
+                // Why: inject only the local-part of the email (the piece before '@').
+                // Lampa Android builds external-player URLs as http://login:pass@host/…
+                // — a login that itself contains '@' (e.g. the full email) produces two
+                // '@' in the userinfo and breaks URL parsers like VLC. Using the bare
+                // local-part keeps the userinfo well-formed and matches the historic
+                // behaviour the user had before Round 4 ("scorpion_respect" vs full
+                // email). FindAccsUser() below falls back to local-part matching so
+                // Basic auth still resolves to the same accsdb user.
+                string login;
+                if (!string.IsNullOrEmpty(token))
+                    login = token;
+                else
+                {
+                    string uid = user.id ?? string.Empty;
+                    int at = uid.IndexOf('@');
+                    login = at > 0 ? uid.Substring(0, at) : uid;
+                }
+
                 file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_login'[^\n\r]+",
                     $"Lampa.Storage.set('torrserver_login','{HttpUtility.JavaScriptStringEncode(login)}');");
             }
@@ -117,12 +129,21 @@ namespace TorrServer.Controllers
             // be proxied anonymously. An unauthenticated caller could load /ts and
             // /ts/static/js/* without any auth — defeating the PR #44 /ts/settings
             // lockdown because the UI itself was still reachable for reconnaissance.
-            // Gate on admin cookie OR strict loopback OR signed HMAC.  Return 404
-            // (not 401) when unauthenticated so the existence of the TorrServer
-            // proxy cannot be probed by unauthenticated clients.
-            if (AppInit.conf.accsdb.enable && !await IsAdminOrLoopbackAsync().ConfigureAwait(false))
+            // Gate on admin cookie OR strict loopback OR signed HMAC OR a valid
+            // accsdb Basic credential (same check Index() applies to /ts/torrents):
+            // the Lampa Android client and browser users open the UI with those
+            // credentials, and write-side protection lives on /ts/settings (PR #44
+            // admin-gate in TorAPI), not on reading the UI bundle.  Return
+            // 401+Www-Authenticate so browsers show the native login prompt; any
+            // unauthenticated caller can already detect /ts via /ts/torrents'
+            // existing 401, so withholding this challenge here would only hurt UX.
+            if (AppInit.conf.accsdb.enable
+                && !await IsAdminOrLoopbackAsync().ConfigureAwait(false)
+                && TryTsSessionUser() == null
+                && TryAccsdbBasicUser() == null)
             {
-                HttpContext.Response.StatusCode = 404;
+                HttpContext.Response.Headers["Www-Authenticate"] = "Basic realm=\"TorrServer\"";
+                HttpContext.Response.StatusCode = 401;
                 return new EmptyResult();
             }
 
@@ -148,6 +169,21 @@ namespace TorrServer.Controllers
             {
                 html = html.Replace("href=\"/", "href=\"/ts/").Replace("src=\"/", "src=\"/ts/");
                 html = html.Replace("src=\"./", "src=\"/ts/");
+
+                // Why: upstream index.html references three external CDNs —
+                // cdn.lordicon.com, gstatic.com (Firebase SDK) and Google
+                // Fonts — plus an inline firebase.initializeApp block that
+                // runs analytics. On networks where these CDNs are slow or
+                // blocked the browser blocks page interactivity for minutes
+                // waiting on them (symptom: "Ожидание ответа от
+                // cdn.lordicon.com…" in the status bar). None of them are
+                // required to run the UI against the proxied TS backend, so
+                // strip them from the served HTML.
+                html = Regex.Replace(html, "<script[^>]*src=\"https?://[^\"]+\"[^>]*>\\s*</script>", string.Empty);
+                html = Regex.Replace(html, "<script>const firebaseConfig=.*?firebase\\.analytics\\(\\)\\s*</script>", string.Empty);
+                html = Regex.Replace(html, "<link[^>]*href=\"https?://(fonts|cdn)\\.[^\"]+\"[^>]*>", string.Empty);
+                html = Regex.Replace(html, "<link[^>]*href=\"https://fonts\\.googleapis\\.com[^\"]+\"[^>]*>", string.Empty);
+
                 return Content(html, "text/html; charset=utf-8");
             }
         }
@@ -197,24 +233,34 @@ namespace TorrServer.Controllers
                 }
                 #endregion
 
-                // Why (round5 HIGH-3): the GET /ts/stream and /ts/play branch used to
-                // return upstream bytes *before* the auth gate below was evaluated —
-                // any unauthenticated caller could pull media directly from the
-                // TorrServer proxy. The gate is now applied up-front: accsdb user
-                // (Basic auth), admin cookie, strict loopback, or signed HMAC. Matches
-                // the treatment /ts/torrents already receives.
-                bool isStreamPath = HttpContext.Request.Method == "GET" &&
-                                    Regex.IsMatch(HttpContext.Request.Path.Value, "^/ts/(stream|play)");
-
-                if (isStreamPath)
+                // Why: read-only playback paths (/ts/stream, /ts/play) arrive from
+                // the player WITHOUT Authorization and without user:pass@ userinfo
+                // (Lampa only injects Basic into XHR beforeSend, never into player
+                // URLs). Gating on Basic directly 401's every real playback (see
+                // the regression introduced by round5 HIGH-3 that this replaces).
+                //
+                // Instead we use "IP sticky" auth: any Basic-authenticated request
+                // on this controller (Main UI, /ts/torrents, /ts/settings below)
+                // calls RememberStreamSticky(user) which stores (ip, ua) for a
+                // sliding 2h window. Stream/play is allowed iff (ip, ua) is in
+                // that window — the same device that just asked Lampa for the
+                // torrent list. A hash leaked to a different IP/UA cannot stream.
+                // If accsdb is not configured we fall through to upstream
+                // behaviour (open).
+                // Why (upstream 154.3 parity): /ts/stream and /ts/play are opened
+                // by external players (Android system player, VLC, MX Player) with
+                // NO Authorization header and, depending on the player, NO
+                // user:pass@ userinfo in the URL — so any gating here forces the
+                // native "HTTP authentication" dialog on every playback, which is
+                // unusable. Hash-based URLs for stream/play are only discoverable
+                // via /ts/torrents (gated below by Basic / cookie / admin), so a
+                // stream URL is already a bearer token. Defence in depth: keep
+                // write-side lockdown on /ts/settings + /ts/torrents POST.
+                if (HttpContext.Request.Method == "GET" &&
+                    Regex.IsMatch(HttpContext.Request.Path.Value, "^/ts/(stream|play)"))
                 {
-                    if (await IsAdminOrLoopbackAsync().ConfigureAwait(false))
-                    {
-                        await TorAPI().ConfigureAwait(false);
-                        return;
-                    }
-                    // fall through into Basic-auth accsdb check below; if that also
-                    // fails, the 401 at the end of this block is returned.
+                    await TorAPI().ConfigureAwait(false);
+                    return;
                 }
 
                 if (HttpContext.Request.Headers.TryGetValue("Authorization", out var Authorization))
@@ -251,7 +297,7 @@ namespace TorrServer.Controllers
                     }
 
                     if (login != null && passwd != null && !tsAuthDisabled &&
-                        AppInit.conf.accsdb.findUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && CrypTo.FixedTimeEquals(passwd, tsPasswd))
+                        FindAccsUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && CrypTo.FixedTimeEquals(passwd, tsPasswd))
                     {
                         if (ModInit.conf.group > user.group)
                         {
@@ -259,9 +305,23 @@ namespace TorrServer.Controllers
                             return;
                         }
 
+                        IssueTsSession(user);
                         await TorAPI(user).ConfigureAwait(false);
                         return;
                     }
+                }
+
+                // Why (cookie fallback): MatriX UI fires its /ts/torrents, /ts/settings,
+                // /ts/echo XHRs via fetch() without `credentials:"include"`, so the
+                // browser does NOT attach the cached Basic credentials. We issue a
+                // ts_session cookie on any successful Basic handshake (above, or in
+                // Main() via TryAccsdbBasicUser); accept that cookie here as proof of
+                // prior auth for subsequent XHRs. Without this the UI hangs on first
+                // load after login.
+                if (TryTsSessionUser() is AccsUser sessionUser)
+                {
+                    await TorAPI(sessionUser).ConfigureAwait(false);
+                    return;
                 }
 
                 if (HttpContext.Request.Path.Value.StartsWith("/ts/echo"))
@@ -281,10 +341,175 @@ namespace TorrServer.Controllers
             }
         }
 
-        // Why (round5): shared admin gate reused by Main() and the /ts/stream|/ts/play
-        // branch of Index(). Accepts strict loopback, admin cookie (rootPasswd), or a
-        // valid X-Signature/X-Timestamp HMAC (signs body). Deliberately does NOT accept
-        // accsdb Basic auth — those credentials are validated separately in Index().
+        // Why: Main() needs the same accsdb-basic validation that Index() does inline,
+        // otherwise the UI is unreachable for the primary intended audience (accsdb
+        // users opening /ts from Lampa or a browser). Returns the validated user on
+        // success, null on any failure (missing header, wrong format, weak/unset
+        // defaultPasswd, unknown login, expired/banned user, password mismatch,
+        // group below module minimum). Does not write to the response.
+        Shared.Models.Base.AccsUser TryAccsdbBasicUser()
+        {
+            if (!AppInit.conf.accsdb.enable)
+                return null;
+
+            string tsPasswd = ModInit.conf?.defaultPasswd;
+            if (string.IsNullOrEmpty(tsPasswd) || tsPasswd.Length < 8)
+                return null;
+
+            if (!HttpContext.Request.Headers.TryGetValue("Authorization", out var Authorization))
+                return null;
+
+            string login = null, passwd = null;
+            try
+            {
+                string authHeader = Authorization.ToString();
+                if (authHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+                {
+                    byte[] data = Convert.FromBase64String(authHeader.Substring("Basic ".Length).Trim());
+                    string[] decodedString = Encoding.UTF8.GetString(data).Split(':', 2);
+
+                    if (decodedString.Length == 2)
+                    {
+                        login = Uri.UnescapeDataString(decodedString[0]).ToLowerAndTrim();
+                        passwd = decodedString[1];
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (login == null || passwd == null)
+                return null;
+
+            if (FindAccsUser(login) is not Shared.Models.Base.AccsUser user)
+                return null;
+
+            if (user.ban || user.expires <= DateTime.UtcNow)
+                return null;
+
+            if (!CrypTo.FixedTimeEquals(passwd, tsPasswd))
+                return null;
+
+            if (ModInit.conf.group > user.group)
+                return null;
+
+            IssueTsSession(user);
+            return user;
+        }
+
+        // Why (local-part fallback): ts.js now injects only the local-part of
+        // the user's email as the TS login (e.g. "scorpion_respect" for
+        // "scorpion_respect@mail.ru") so external-player URLs built as
+        // http://login:pass@host/… have a single '@' delimiter VLC can parse.
+        // Accsdb still keys users by full email, so on Basic auth validation
+        // we first try exact id match (preserves full-email clients and box_mac/
+        // uid aliases) and then, if the login has no '@', match it against the
+        // local-part of every stored id. Matching is case-insensitive via the
+        // same ToLowerAndTrim that AccsConf.findUser uses.
+        static Shared.Models.Base.AccsUser FindAccsUser(string loginOrLocal)
+        {
+            if (string.IsNullOrEmpty(loginOrLocal))
+                return null;
+
+            var u = AppInit.conf.accsdb.findUser(loginOrLocal);
+            if (u != null)
+                return u;
+
+            if (loginOrLocal.Contains('@'))
+                return null;
+
+            string local = loginOrLocal.ToLowerAndTrim();
+            foreach (var candidate in AppInit.conf.accsdb.users)
+            {
+                string id = candidate?.id;
+                if (string.IsNullOrEmpty(id))
+                    continue;
+
+                int at = id.IndexOf('@');
+                if (at <= 0)
+                    continue;
+
+                if (id.Substring(0, at).ToLowerAndTrim() == local)
+                    return candidate;
+            }
+
+            return null;
+        }
+
+        // Why (cookie session): MatriX UI uses `fetch()` without
+        // `credentials:"include"`, which by spec does not echo the browser's
+        // cached Basic-auth into XHR/fetch requests — so after the login
+        // prompt the UI's subsequent fetches to /ts/settings, /ts/torrents
+        // etc. arrive with no Authorization and 401. Browser only re-prompts
+        // on full-page navigations, not on background fetch, so the UI
+        // silently hangs on its initial round of XHRs.
+        //
+        // Fix: after a successful Basic validation we mint a random session
+        // id, bind it to the user's id in memoryCache for 24h (sliding),
+        // and set a Path=/ts; Secure; HttpOnly; SameSite=Lax cookie. The
+        // cookie is same-origin so browser attaches it to fetch by default.
+        // On every subsequent TS request we accept either Basic or a valid
+        // cookie as the authenticated user. Cookie does not survive a
+        // container restart (in-memory cache), which is acceptable — user
+        // just re-enters Basic once.
+        const string TsSessionCookie = "ts_session";
+
+        static string TsSessionKey(string sid) => $"ts:session:{sid}";
+
+        void IssueTsSession(Shared.Models.Base.AccsUser user)
+        {
+            try
+            {
+                byte[] raw = new byte[18];
+                System.Security.Cryptography.RandomNumberGenerator.Fill(raw);
+                string sid = Convert.ToBase64String(raw)
+                    .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+                memoryCache.Set(TsSessionKey(sid), user.id ?? string.Empty,
+                    new MemoryCacheEntryOptions { SlidingExpiration = TimeSpan.FromHours(24) });
+
+                HttpContext.Response.Cookies.Append(TsSessionCookie, sid, new CookieOptions
+                {
+                    Path = "/ts",
+                    HttpOnly = true,
+                    Secure = HttpContext.Request.IsHttps,
+                    SameSite = SameSiteMode.Lax,
+                    MaxAge = TimeSpan.FromHours(24)
+                });
+            }
+            catch { /* non-fatal: cookie is an optimisation */ }
+        }
+
+        Shared.Models.Base.AccsUser TryTsSessionUser()
+        {
+            if (!AppInit.conf.accsdb.enable)
+                return null;
+
+            if (!HttpContext.Request.Cookies.TryGetValue(TsSessionCookie, out string sid) || string.IsNullOrEmpty(sid))
+                return null;
+
+            if (!memoryCache.TryGetValue<string>(TsSessionKey(sid), out string uid) || string.IsNullOrEmpty(uid))
+                return null;
+
+            if (AppInit.conf.accsdb.findUser(uid) is not Shared.Models.Base.AccsUser user)
+                return null;
+
+            if (user.ban || user.expires <= DateTime.UtcNow)
+                return null;
+
+            if (ModInit.conf.group > user.group)
+                return null;
+
+            return user;
+        }
+
+        // Why (round5): shared admin gate reused by Main() and read-only /ts paths.
+        // Accepts strict loopback, admin cookie (rootPasswd), or a valid
+        // X-Signature/X-Timestamp HMAC (signs body). Does NOT accept accsdb Basic
+        // auth — Main() pairs this with TryAccsdbBasicUser(); Index() validates Basic
+        // separately inline below.
         async Task<bool> IsAdminOrLoopbackAsync()
         {
             var connFeat = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();

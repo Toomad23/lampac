@@ -8,6 +8,20 @@ namespace Lampac.Controllers
 {
     public class ErrorDocController : BaseController
     {
+        // Why (security): production requests that hit an unhandled exception must
+        // not leak stack traces, source snippets or configuration. UseExceptionHandler
+        // re-executes the pipeline at /error; return a fixed 500 body with no server
+        // detail. Bound to all verbs so POST exceptions also land here cleanly.
+        [AllowAnonymous]
+        [HttpGet, HttpPost, HttpPut, HttpDelete, HttpPatch]
+        [Route("/error")]
+        public ActionResult HandleError()
+        {
+            Response.StatusCode = 500;
+            Response.ContentType = "application/json; charset=utf-8";
+            return Content("{\"error\":\"internal\"}", "application/json; charset=utf-8");
+        }
+
         [HttpGet]
         [AllowAnonymous]
         [Route("/e/acb")]

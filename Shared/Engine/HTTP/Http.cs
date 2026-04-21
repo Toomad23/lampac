@@ -59,7 +59,16 @@ namespace Shared.Engine
                 AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate
             };
 
-            handler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
+            // Why (security): previously this unconditionally installed a
+            // callback that returned true for ANY upstream certificate,
+            // disabling MITM protection on every outbound call across the
+            // whole fork. That is only safe for the proxy-family clients
+            // which deliberately forward to untrusted third-party hosts
+            // (torrent trackers, CDN image mirrors). Gate the skip behind
+            // AppInit.insecureSkipVerify so the default (false) enforces
+            // full chain validation; opt-in the skip for debugging only.
+            if (AppInit.conf.insecureSkipVerify)
+                handler.ServerCertificateCustomValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
 
             if (proxy != null)
             {

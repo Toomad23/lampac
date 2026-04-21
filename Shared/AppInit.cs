@@ -419,6 +419,33 @@ namespace Shared
 
         public bool useDeveloperExceptionPage = false;
 
+        /// <summary>
+        /// When true, disables TLS certificate validation for the "base",
+        /// "baseNoRedirect", "http2", "http2NoRedirect" and "http3" HTTP
+        /// clients as well as the shared <see cref="Shared.Engine.Http.Handler"/>
+        /// factory.
+        ///
+        /// SECURITY: this turns off MITM protection globally for outbound
+        /// traffic. Leave at the default (false) unless you are debugging a
+        /// broken upstream PKI and understand the risk. Proxy-family clients
+        /// (<see cref="proxyInsecureSkipVerify"/>) are gated separately for
+        /// back-compat with untrusted tracker/CDN origins.
+        /// </summary>
+        public bool insecureSkipVerify = false;
+
+        /// <summary>
+        /// When true, disables TLS certificate validation for the "proxy",
+        /// "proxyRedirect", "proxyimg" and "http2proxyimg" HTTP clients —
+        /// these forward to arbitrary third-party sources (tracker webseeds,
+        /// CDN image hosts) that commonly ship broken or self-signed certs,
+        /// so the default is true for back-compat. A startup warning is
+        /// emitted to remind operators.
+        ///
+        /// SECURITY: set to false once your proxy targets have healthy TLS
+        /// to restore MITM protection on the forwarder path.
+        /// </summary>
+        public bool proxyInsecureSkipVerify = true;
+
         public bool mikrotik = false;
 
         public string watcherInit = "cron";// system

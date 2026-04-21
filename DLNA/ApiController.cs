@@ -171,6 +171,8 @@ namespace DLNA.Controllers
                             }
                             catch { }
 
+                            TryDeleteTorrentOwner(e.TorrentManager.InfoHashes.V1.ToHex());
+
                             foreach (var f in e.TorrentManager.Files)
                             {
                                 try
@@ -747,22 +749,124 @@ namespace DLNA.Controllers
         }
         #endregion
 
-        // DLNA mutating endpoints have no per-request auth of their own — when
-        // Accsdb is disabled (or WAF.allowExternalIpAccess is on) any caller
-        // reaching the listener can delete files, queue torrents, stop/start
-        // downloads, etc. Require loopback in that deployment mode; when
-        // Accsdb is enabled it already gates these paths.
+        // DLNA mutating endpoints must be restricted to callers that can prove
+        // they own the torrent (or the whole DLNA root). The previous check
+        // short-circuited to "allowed" whenever Accsdb was enabled, relying on
+        // Accsdb's coarse authn — but Accsdb is a per-tenant gate, not a
+        // per-torrent ACL, so any authenticated user could stop/delete any
+        // other tenant's downloads. Enforce:
+        //   * IsLocalRequest (x-client-ip + rootPasswd from loopback) — always ok
+        //   * Admin passwd cookie matching AppInit.rootPasswd — always ok
+        //   * Strict-loopback socket peer (127/8, ::1)                — always ok
+        //   * Accsdb enabled + caller's user_uid matches the torrent's
+        //     recorded owner (cache/metadata/{hash}.owner) — ok for that hash
+        //   * Accsdb disabled + strict loopback — ok (single-tenant boxes)
+        // Anything else is forbidden.
         //
-        // Why (FC-1): previously this used IsLocalIp, which also accepts
-        // RFC1918/ULA peers — any LAN host could delete files. Strictly
-        // require 127/8 or ::1.
-        bool IsDlnaMutationForbidden()
+        // `hash` is the infohash for tracker/* routes (we can check
+        // ownership); for routes that operate on the DLNA root without a
+        // per-torrent object (e.g. /dlna/delete on a file path), pass null
+        // and only admin/local callers are allowed.
+        bool IsDlnaMutationForbidden(string hash = null)
         {
-            if (AppInit.conf.accsdb.enable)
+            // Admin cookie bypass — matches the pattern in AdminController.TryAuthorizeAdmin
+            // and the Accsdb middleware. Works even when accsdb is disabled.
+            if (HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd) &&
+                !string.IsNullOrEmpty(cookiePasswd) &&
+                !string.IsNullOrEmpty(AppInit.rootPasswd) &&
+                CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd))
+                return false;
+
+            // Local requests (x-client-ip handshake via rootPasswd over loopback).
+            if (requestInfo?.IsLocalRequest == true)
                 return false;
 
             string ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-            return !Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(ip);
+            bool isLoopback = Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(ip);
+
+            if (!AppInit.conf.accsdb.enable)
+            {
+                // Single-tenant deployment: fall back to the pre-fix behaviour —
+                // strictly loopback only.
+                return !isLoopback;
+            }
+
+            // Multi-tenant (accsdb enabled): ownership check.
+            if (isLoopback)
+                return false;
+
+            string callerUid = requestInfo?.user_uid;
+            if (string.IsNullOrEmpty(callerUid))
+                return true;
+
+            if (string.IsNullOrEmpty(hash))
+            {
+                // No per-torrent subject to check ownership against — deny
+                // (only admin/local can reach this point).
+                return true;
+            }
+
+            string owner = TryReadTorrentOwner(hash);
+
+            // Legacy torrents added before this fix have no .owner file.
+            // They belong to the operator; only admin/local may manage them.
+            if (owner == null)
+                return true;
+
+            return !string.Equals(owner, callerUid, StringComparison.Ordinal);
+        }
+
+        static string OwnerFilePath(string infohash)
+        {
+            if (string.IsNullOrEmpty(infohash))
+                return null;
+
+            // Normalise: infohash hex is case-insensitive; use uppercase to match
+            // the .torrent filenames written by the existing code.
+            return $"cache/metadata/{infohash.ToUpperInvariant()}.owner";
+        }
+
+        static string TryReadTorrentOwner(string infohash)
+        {
+            try
+            {
+                string path = OwnerFilePath(infohash);
+                if (path == null || !IO.File.Exists(path))
+                    return null;
+
+                string v = IO.File.ReadAllText(path)?.Trim();
+                return string.IsNullOrEmpty(v) ? null : v;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        static void TryWriteTorrentOwner(string infohash, string uid)
+        {
+            if (string.IsNullOrEmpty(infohash) || string.IsNullOrEmpty(uid))
+                return;
+
+            try
+            {
+                Directory.CreateDirectory("cache/metadata/");
+                string path = OwnerFilePath(infohash);
+                if (path != null && !IO.File.Exists(path))
+                    IO.File.WriteAllText(path, uid);
+            }
+            catch { }
+        }
+
+        static void TryDeleteTorrentOwner(string infohash)
+        {
+            try
+            {
+                string path = OwnerFilePath(infohash);
+                if (path != null && IO.File.Exists(path))
+                    IO.File.Delete(path);
+            }
+            catch { }
         }
 
         #region Delete
@@ -917,9 +1021,6 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable)
                 return Json(new { error = "enable" });
 
-            if (IsDlnaMutationForbidden())
-                return Json(new { error = "forbidden" });
-
             try
             {
                 var tparse = await getTorrent(path);
@@ -928,9 +1029,23 @@ namespace DLNA.Controllers
 
                 // cache metadata
                 string hash = Regex.Match(tparse.magnet, "btih:([a-z0-9]+)", RegexOptions.IgnoreCase).Groups[1].Value.ToLower();
+
+                // Ownership gate: compute the infohash first so the ACL check can
+                // look up an existing .owner record (if the torrent is already
+                // queued by another tenant, the current caller must not be able
+                // to replay a Download on it without permission).
+                if (IsDlnaMutationForbidden(hash))
+                    return Json(new { error = "forbidden" });
+
                 if (IO.File.Exists($"cache/torrent/{hash}") && !IO.File.Exists($"cache/metadata/{hash.ToUpper()}.torrent"))
                     IO.File.Copy($"cache/torrent/{hash}", $"cache/metadata/{hash.ToUpper()}.torrent");
-                
+
+                // First tenant to queue this infohash becomes the owner. Admin
+                // and loopback callers have no user_uid — treat them as shared
+                // ownership (no .owner file, future caller can only be admin).
+                if (AppInit.conf.accsdb.enable && !string.IsNullOrEmpty(requestInfo?.user_uid))
+                    TryWriteTorrentOwner(hash, requestInfo.user_uid);
+
                 var magnetLink = MagnetLink.Parse(tparse.magnet + (tparse.magnet.Contains("?") ? "&" : "?") + defTrackers);
 
                 await bullderClientEngine();
@@ -1030,6 +1145,8 @@ namespace DLNA.Controllers
                                         IO.File.Delete($"cache/metadata/{e.TorrentManager.InfoHashes.V1.ToHex()}.json");
                                     }
                                     catch { }
+
+                                    TryDeleteTorrentOwner(e.TorrentManager.InfoHashes.V1.ToHex());
 
                                     foreach (var f in e.TorrentManager.Files)
                                     {
@@ -1177,7 +1294,7 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
-            if (IsDlnaMutationForbidden())
+            if (IsDlnaMutationForbidden(infohash))
                 return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
@@ -1189,6 +1306,8 @@ namespace DLNA.Controllers
                     IO.File.Delete($"cache/metadata/{manager.InfoHashes.V1.ToHex()}.json");
                 }
                 catch { }
+
+                TryDeleteTorrentOwner(manager.InfoHashes.V1.ToHex());
 
                 try
                 {
@@ -1211,7 +1330,7 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
-            if (IsDlnaMutationForbidden())
+            if (IsDlnaMutationForbidden(infohash))
                 return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
@@ -1230,7 +1349,7 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
-            if (IsDlnaMutationForbidden())
+            if (IsDlnaMutationForbidden(infohash))
                 return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
@@ -1249,7 +1368,7 @@ namespace DLNA.Controllers
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
 
-            if (IsDlnaMutationForbidden())
+            if (IsDlnaMutationForbidden(infohash))
                 return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);

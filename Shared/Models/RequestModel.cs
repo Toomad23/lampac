@@ -44,7 +44,10 @@ namespace Shared.Models
             }
             set
             {
-                if (!string.IsNullOrEmpty(value))
+                // Why: Country is reflected into JS/HTML ({country}); enforce ISO alpha-2 at
+                // the setter so any untrusted caller (e.g. spoofed CF-IPCountry) can't poison it.
+                if (!string.IsNullOrEmpty(value) && value.Length == 2 &&
+                    value[0] >= 'A' && value[0] <= 'Z' && value[1] >= 'A' && value[1] <= 'Z')
                     _countryCode = value;
             }
         }

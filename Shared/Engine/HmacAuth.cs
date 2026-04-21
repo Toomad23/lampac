@@ -61,6 +61,32 @@ namespace Shared.Engine
             return CryptographicOperations.FixedTimeEquals(expected, provided);
         }
 
+        // Why: reusable HMAC-SHA256 compute for non-request payloads (e.g. KurwaCron
+        // script integrity). Returns the raw MAC; callers compare with
+        // CryptographicOperations.FixedTimeEquals against an expected hex / base64
+        // sidecar. Decoupled from the request-signature path so we don't leak the
+        // AppInit.rootPasswd-derived key into arbitrary verification contexts.
+        public static byte[] HmacCompute(byte[] key, byte[] body)
+        {
+            if (key == null || body == null)
+                return null;
+
+            using var h = new HMACSHA256(key);
+            return h.ComputeHash(body);
+        }
+
+        public static bool HmacVerify(byte[] key, byte[] body, byte[] expected)
+        {
+            if (key == null || body == null || expected == null)
+                return false;
+
+            byte[] computed = HmacCompute(key, body);
+            if (computed == null || computed.Length != expected.Length)
+                return false;
+
+            return CryptographicOperations.FixedTimeEquals(computed, expected);
+        }
+
         // Why: ordinal-sorted keys + URL-encoded key/value so client and server agree
         // on a single canonical form regardless of how the HTTP transport reordered them.
         static string CanonicalQuery(IQueryCollection q)

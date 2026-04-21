@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Shared.Engine.Utilities;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Text;
@@ -24,6 +25,7 @@ namespace Shared.Engine
 
         private static ApplicationPartManager partManager;
         private static Dictionary<string, string> repositoryState;
+        private static readonly HashSet<string> unpinnedWarned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         static ModuleRepository()
         {
@@ -105,7 +107,11 @@ namespace Shared.Engine
                         }
                         else
                         {
-                            Console.WriteLine($"ModuleRepository: repository '{repository.Url}' has no commit_sha pin in YAML; proceeding with unpinned latest ({commitSha}). Add 'commit_sha: {commitSha}' to lock.");
+                            lock (unpinnedWarned)
+                            {
+                                if (unpinnedWarned.Add(repository.StateKey))
+                                    Console.WriteLine($"ModuleRepository: repository '{repository.Url}' has no commit_sha pin in YAML; proceeding with unpinned latest ({commitSha}). Add 'commit_sha: {commitSha}' to lock. (warning shown once per process)");
+                            }
                         }
 
                         string stateKey = repository.StateKey;
@@ -115,7 +121,7 @@ namespace Shared.Engine
                             continue;
                         }
 
-                        if (DownloadAndExtract(repository, modulesToCompile))
+                        if (DownloadAndExtract(repository, commitSha, modulesToCompile))
                         {
                             state[stateKey] = commitSha;
                             stateChanged = true;
@@ -708,14 +714,21 @@ namespace Shared.Engine
             return result;
         }
 
-        private static bool DownloadAndExtract(RepositoryEntry repository, HashSet<string> modulesToCompile)
+        private static bool DownloadAndExtract(RepositoryEntry repository, string commitSha, HashSet<string> modulesToCompile)
         {
             string branch = string.IsNullOrWhiteSpace(repository.Branch) ? "main" : repository.Branch;
-            string archiveUrl = $"https://codeload.github.com/{repository.Owner}/{repository.Name}/zip/refs/heads/{Uri.EscapeDataString(branch)}";
+
+            // Why (supply-chain): when a commit_sha pin exists we resolve the
+            // archive URL by SHA so GitHub serves exactly that commit (branch
+            // heads move). The unpinned branch URL is only used as a fallback
+            // for backward compatibility.
+            string archiveUrl = !string.IsNullOrEmpty(commitSha)
+                ? $"https://codeload.github.com/{repository.Owner}/{repository.Name}/zip/{Uri.EscapeDataString(commitSha)}"
+                : $"https://codeload.github.com/{repository.Owner}/{repository.Name}/zip/refs/heads/{Uri.EscapeDataString(branch)}";
             string tempZip = Path.Combine(Path.GetTempPath(), $"lampac-modrepo-{Guid.NewGuid():N}.zip");
             string tempDir = Path.Combine(Path.GetTempPath(), $"lampac-modrepo-{Guid.NewGuid():N}");
 
-            Console.WriteLine($"ModuleRepository: DownloadAndExtract start for {repository.Owner}/{repository.Name} branch={branch}");
+            Console.WriteLine($"ModuleRepository: DownloadAndExtract start for {repository.Owner}/{repository.Name} branch={branch} sha={commitSha ?? "(none)"}");
 
             try
             {
@@ -732,7 +745,7 @@ namespace Shared.Engine
                         response.Content.CopyToAsync(stream).GetAwaiter().GetResult();
                 }
 
-                ZipFile.ExtractToDirectory(tempZip, tempDir, true);
+                ZipSafe.ExtractToDirectory(tempZip, tempDir, overwriteFiles: true);
                 Console.WriteLine($"ModuleRepository: archive extracted to {tempDir}");
 
                 string root = Directory.GetDirectories(tempDir).FirstOrDefault();

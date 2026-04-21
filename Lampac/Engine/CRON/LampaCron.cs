@@ -1,8 +1,8 @@
 ﻿using Shared;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using System;
 using System.IO;
-using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,6 +11,7 @@ namespace Lampac.Engine.CRON
     public static class LampaCron
     {
         static string currentapp;
+        static bool unpinnedWarned;
 
         public static void Run()
         {
@@ -73,10 +74,28 @@ namespace Lampac.Engine.CRON
                     byte[] array = await Http.Download(uri);
                     if (array != null)
                     {
+                        // Why (supply-chain): the Lampa zip comes from a third-party
+                        // host. If operator pinned init.sha256 we verify before
+                        // extracting; mismatch keeps the previously-installed copy.
+                        string actualSha = ZipSafe.ComputeSha256Hex(array);
+                        if (!string.IsNullOrWhiteSpace(init.sha256))
+                        {
+                            if (!string.Equals(actualSha, init.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.WriteLine($"LampaCron: ERROR sha256 mismatch for {uri} (expected {init.sha256}, got {actualSha}); keeping existing install");
+                                return;
+                            }
+                        }
+                        else if (!unpinnedWarned)
+                        {
+                            unpinnedWarned = true;
+                            Console.WriteLine($"LampaCron: LampaWeb.sha256 not set; downloaded Lampa zip is unverified (actual sha256={actualSha}). Add 'sha256' to lock. (warning shown once per process)");
+                        }
+
                         currentapp = null;
 
                         await File.WriteAllBytesAsync("wwwroot/lampa.zip", array);
-                        ZipFile.ExtractToDirectory("wwwroot/lampa.zip", "wwwroot/", overwriteFiles: true);
+                        ZipSafe.ExtractToDirectory("wwwroot/lampa.zip", "wwwroot/", overwriteFiles: true);
 
                         if (istree)
                         {

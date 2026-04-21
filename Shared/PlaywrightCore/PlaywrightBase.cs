@@ -1,9 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Playwright;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using Shared.Models;
 using Shared.Models.SQL;
-using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -195,6 +195,31 @@ namespace Shared.PlaywrightCore
 
             if (await Http.DownloadFile(uri, outfile))
             {
+                // Why (HIGH-9, supply-chain): every Node/package.zip we download from
+                // the third-party lampac-talks release bucket is executed (node is the
+                // Playwright JS driver host; package.zip becomes .playwright/package/).
+                // Verify a hardcoded SHA-256 before we extract or run it. If the URL
+                // is not in the pin map (e.g. a tag we have not vetted) we refuse the
+                // file — fail-closed. See PlaywrightHashPins for the current map.
+                string expectedSha = PlaywrightHashPins.Resolve(uri);
+                if (!string.IsNullOrEmpty(expectedSha))
+                {
+                    string actual = ZipSafe.ComputeSha256Hex(outfile);
+                    if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"Playwright: SHA-256 MISMATCH for {uri}; expected {expectedSha}, got {actual}. Deleting.");
+                        try { File.Delete(outfile); } catch { }
+                        return false;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"Playwright: no SHA-256 pin for {uri}; refusing to use the downloaded file. " +
+                                      "Update Shared/PlaywrightCore/PlaywrightHashPins.cs before deploying.");
+                    try { File.Delete(outfile); } catch { }
+                    return false;
+                }
+
                 // Why (L-6): File.Create returns a FileStream that must be disposed, otherwise
                 // the handle leaks until GC finalisation (and on Windows prevents follow-up
                 // deletes of the .ok file). We only need a zero-byte marker, so dispose
@@ -205,13 +230,24 @@ namespace Shared.PlaywrightCore
                 {
                     Console.WriteLine($"Playwright: unzip {outfile}");
 
-                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    // Why (zip-slip): previously we shelled out to `unzip` on Linux
+                    // (string-interpolated path → shell-injection if the file name
+                    // ever contains a quote) and used ZipFile.ExtractToDirectory on
+                    // Windows/macOS (no path-traversal check — a malicious entry
+                    // named "../../etc/passwd" would escape the destination). Both
+                    // callers are replaced with ZipSafe.ExtractToDirectory, which
+                    // rejects absolute/".." entries before writing.
+                    string destinationDir = Path.Combine(Environment.CurrentDirectory, ".playwright", folder ?? string.Empty);
+                    try
                     {
-                        await Bash.Run($"unzip {Path.Combine(Environment.CurrentDirectory, outfile)} -d {Path.Combine(Environment.CurrentDirectory, ".playwright", folder ?? string.Empty)}");
+                        ZipSafe.ExtractToDirectory(outfile, destinationDir, overwriteFiles: true);
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        ZipFile.ExtractToDirectory(outfile, ".playwright/" + folder, overwriteFiles: true);
+                        Console.WriteLine($"Playwright: zip extract failed for {outfile}: {ex.Message}");
+                        try { File.Delete(outfile); } catch { }
+                        try { File.Delete($"{outfile}.ok"); } catch { }
+                        return false;
                     }
 
                     File.Delete(outfile);

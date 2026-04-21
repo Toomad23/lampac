@@ -2,7 +2,9 @@
 # Used by the GitHub Actions pipeline in .github/workflows/docker-publish.yml
 
 # ---------- build stage ----------
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+# Digest captured 2026-04-21. Pinning mutable tags protects the build from
+# silent base-image swaps; bump deliberately on each release cut.
+FROM mcr.microsoft.com/dotnet/sdk:9.0@sha256:e04aef5e32fe25cea4641ecd2f2d8d7eca009f5d937bd545250f5ee5f35cf3b5 AS build
 WORKDIR /src
 
 # Restore first for better layer caching
@@ -39,7 +41,8 @@ RUN dotnet publish Lampac/Lampac.csproj -c Release -o /publish --no-restore \
  && find /publish -name '*.pdb' -delete
 
 # ---------- runtime stage ----------
-FROM debian:12.5-slim
+# Digest captured 2026-04-21. See build-stage rationale.
+FROM debian:12.5-slim@sha256:67f3931ad8cb1967beec602d8c0506af1e37e8d73c2a0b38b181ec5d8560d395
 EXPOSE 9118
 WORKDIR /home
 
@@ -69,8 +72,10 @@ COPY --from=build /publish/ /home/
 RUN mkdir -p runtimes/references
 COPY --from=build /src/BaseModule/Controllers/ /home/basemod/Controllers/
 
+# Why (HIGH-8): pin TorrServer MatriX.135 and verify SHA-256.
 RUN mkdir -p torrserver \
- && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \
+ && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/download/MatriX.135/TorrServer-linux-amd64 \
+ && echo "e8df23592ff44ccaf447d55adde3c625cd2d9de9b2af994aacd2e579d8ea174a  torrserver/TorrServer-linux" | sha256sum -c - \
  && chmod +x torrserver/TorrServer-linux
 
 RUN curl -fSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o /tmp/node.tar.xz \

@@ -1,4 +1,5 @@
-FROM arm64v8/debian:12.5-slim
+# Digest captured 2026-04-21. See amd64 Dockerfile rationale.
+FROM arm64v8/debian:12.5-slim@sha256:e1f2fdb506f6508274cb86743748da620c9533f02370305fdbe8fbb64c225507
 
 EXPOSE 9118
 WORKDIR /home
@@ -16,9 +17,11 @@ RUN curl -L -o publish.zip https://github.com/lampac-talks/lampac/releases/lates
     && rm -rf runtimes/os* && rm -rf runtimes/win* && rm -rf runtimes/linux-arm runtimes/linux-musl-arm64 runtimes/linux-musl-x64 runtimes/linux-x64 \
     && touch isdocker
 
-RUN curl -s https://raw.githubusercontent.com/lampac-talks/lampac/main/Build/Docker/update.sh | bash
-
-RUN mkdir -p torrserver && curl -L -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-arm64 \
+# Why (HIGH-11): removed `curl ... update.sh | bash` pipe (HTTP + TLS skip).
+# Why (HIGH-8): pin TorrServer MatriX.135 and verify SHA-256.
+RUN mkdir -p torrserver \
+    && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/download/MatriX.135/TorrServer-linux-arm64 \
+    && echo "b583dbed25d08a2dfaf2302d4d920070ea5ec0ad7d0211cbf13ffc51110bd4c6  torrserver/TorrServer-linux" | sha256sum -c - \
     && chmod +x torrserver/TorrServer-linux
 
 RUN mkdir -p .playwright/node/linux-arm64 && curl -L -o .playwright/node/linux-arm64/node https://github.com/immisterio/playwright/releases/download/chrome/node-linux-arm64 \

@@ -8,6 +8,8 @@
 
         public string tree { get; set; }
 
+        public string sha256 { get; set; }
+
         public int intervalupdate { get; set; }
 
         public string index { get; set; }

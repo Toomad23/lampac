@@ -241,9 +241,42 @@ namespace TorrServer.Controllers
                         await rs.Content.CopyToAsync(HttpContext.Response.Body, HttpContext.RequestAborted).ConfigureAwait(false);
                         return;
                     }
-                    else if (!ModInit.conf.rdb || Shared.Engine.Utilities.IPNetwork.IsLocalIp(requestInfo.IP))
+                    else
                     {
-                        await httpClient.PostAsync("/settings", new StringContent(requestJson, Encoding.UTF8, "application/json")).ConfigureAwait(false);
+                        // Why (auth-gate): previously, `rdb=false` (default) allowed any
+                        // authenticated user to rewrite TorrServer settings via the /ts/settings
+                        // proxy — TS has no ACL between upstream and the proxy. When
+                        // `rdb=true` the settings are treated as read-only unless the caller is
+                        // strictly loopback (operator on the host). Keep that behaviour, and
+                        // additionally require admin proof (loopback OR rootPasswd cookie OR
+                        // X-Signature/X-Timestamp HMAC) for mutating requests when rdb=false.
+                        var connFeat = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();
+                        string remoteIp = connFeat?.RemoteIpAddress?.ToString()
+                                          ?? HttpContext.Connection.RemoteIpAddress?.ToString();
+
+                        bool isStrictLoopback = Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp);
+                        bool isAdminCookie =
+                            HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
+                            && !string.IsNullOrEmpty(AppInit.rootPasswd)
+                            && Shared.Engine.CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd);
+                        bool isHmac = Shared.Engine.HmacAuth.Validate(HttpContext.Request);
+
+                        bool allowMutation;
+                        if (ModInit.conf.rdb)
+                            allowMutation = isStrictLoopback;
+                        else
+                            allowMutation = isStrictLoopback || isAdminCookie || isHmac;
+
+                        if (allowMutation)
+                        {
+                            await httpClient.PostAsync("/settings", new StringContent(requestJson, Encoding.UTF8, "application/json")).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            HttpContext.Response.StatusCode = 403;
+                            await HttpContext.Response.WriteAsync("admin required for TorrServer settings mutation", HttpContext.RequestAborted).ConfigureAwait(false);
+                            return;
+                        }
                     }
 
                     await HttpContext.Response.WriteAsync(string.Empty, HttpContext.RequestAborted).ConfigureAwait(false);

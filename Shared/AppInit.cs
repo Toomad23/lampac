@@ -470,11 +470,15 @@ namespace Shared
             bypass = "statichdrezka\\."
         };
 
-        public WsConf WebSocket = new WsConf() 
+        public WsConf WebSocket = new WsConf()
         {
             type = "nws", // signalr|nws
-            inactiveAfterMinutes = 120
+            inactiveAfterMinutes = 120,
+            maxPerIp = 4,
+            maxTotal = 128
         };
+
+        public KurwaConf kurwa = new KurwaConf();
 
         public KitConf kit = new KitConf() 
         {

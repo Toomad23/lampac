@@ -35,6 +35,10 @@ namespace Lampac.Engine
 
         public readonly static ConcurrentDictionary<string, string> event_clients = new();
 
+        static readonly ConcurrentDictionary<string, int> _perIpCount = new();
+
+        static int _totalCount;
+
         public static int CountConnection => _connections.Count;
 
         public int CountWeblogClients => weblog_clients.Count;
@@ -70,41 +74,127 @@ namespace Lampac.Engine
                 return;
             }
 
-            using (var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false))
+            // Why (auth-gate): /nws used to accept any TCP peer, upgrade to WS and
+            // register a connection without any auth / IP cap. Two DoS vectors:
+            //   1. Unlimited concurrent sockets from one remote = memory/CPU starvation.
+            //   2. Unlimited total sockets = server OOM.
+            // Gate with loopback OR admin cookie, then enforce per-IP and global caps.
+            var connFeat = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();
+            string remoteIp = connFeat?.RemoteIpAddress?.ToString()
+                              ?? context.Connection.RemoteIpAddress?.ToString();
+
+            bool isLoopback = Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp);
+            bool isAdmin = false;
+            if (!isLoopback)
             {
-                // Always allocate a fresh connection id. The previous code let any
-                // unauthenticated client pick ?id=<victim_connectionId>, ran
-                // Cleanup() which evicted the real owner, and re-registered the
-                // attacker under that id — silently hijacking RCH callbacks and
-                // targeted event messages. There is no reconnect-token flow
-                // implemented that would make the "reuse existing id" path safe.
-                string connectionId = Guid.NewGuid().ToString("N");
-
-                try
+                if (context.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
+                    && !string.IsNullOrEmpty(AppInit.rootPasswd)
+                    && Shared.Engine.CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd))
                 {
-                    var requestInfo = context.Features.Get<RequestModel>();
-
-                    var connection = new NwsConnection(connectionId, socket, AppInit.Host(context), requestInfo);
-
-                    var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-                    connection.SetCancellationSource(cancellationSource);
-
-                    _connections.AddOrUpdate(connectionId, connection, (k, v) => connection);
-
-                    await SendAsync(connection, "Connected", connectionId).ConfigureAwait(false);
-
-                    if (InvkEvent.IsNwsConnected())
-                        InvkEvent.NwsConnected(new EventNwsConnected(connectionId, requestInfo, connection, cancellationSource.Token));
-
-                    await ReceiveLoopAsync(connection, cancellationSource.Token).ConfigureAwait(false);
+                    isAdmin = true;
                 }
-                finally
+                else if (Shared.Engine.HmacAuth.Validate(context.Request))
                 {
-                    Cleanup(connectionId);
-
-                    if (InvkEvent.IsNwsDisconnected())
-                        InvkEvent.NwsDisconnected(new EventNwsDisconnected(connectionId));
+                    isAdmin = true;
                 }
+            }
+
+            if (!isLoopback && !isAdmin)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            int maxTotal = AppInit.conf.WebSocket.maxTotal;
+            bool totalReserved = false;
+            if (maxTotal > 0)
+            {
+                if (Interlocked.Increment(ref _totalCount) > maxTotal)
+                {
+                    Interlocked.Decrement(ref _totalCount);
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    return;
+                }
+                totalReserved = true;
+            }
+
+            string capIp = string.IsNullOrEmpty(remoteIp) ? "-" : remoteIp;
+            int maxPerIp = AppInit.conf.WebSocket.maxPerIp;
+
+            bool ipReserved = false;
+            if (maxPerIp > 0)
+            {
+                bool ipAccepted = true;
+                _perIpCount.AddOrUpdate(capIp, 1, (_, cur) =>
+                {
+                    if (cur >= maxPerIp)
+                    {
+                        ipAccepted = false;
+                        return cur;
+                    }
+                    return cur + 1;
+                });
+
+                if (!ipAccepted)
+                {
+                    if (totalReserved)
+                        Interlocked.Decrement(ref _totalCount);
+                    context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                    return;
+                }
+                ipReserved = true;
+            }
+
+            try
+            {
+                using (var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false))
+                {
+                    // Always allocate a fresh connection id. The previous code let any
+                    // unauthenticated client pick ?id=<victim_connectionId>, ran
+                    // Cleanup() which evicted the real owner, and re-registered the
+                    // attacker under that id — silently hijacking RCH callbacks and
+                    // targeted event messages. There is no reconnect-token flow
+                    // implemented that would make the "reuse existing id" path safe.
+                    string connectionId = Guid.NewGuid().ToString("N");
+
+                    try
+                    {
+                        var requestInfo = context.Features.Get<RequestModel>();
+
+                        var connection = new NwsConnection(connectionId, socket, AppInit.Host(context), requestInfo);
+
+                        var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+                        connection.SetCancellationSource(cancellationSource);
+
+                        _connections.AddOrUpdate(connectionId, connection, (k, v) => connection);
+
+                        await SendAsync(connection, "Connected", connectionId).ConfigureAwait(false);
+
+                        if (InvkEvent.IsNwsConnected())
+                            InvkEvent.NwsConnected(new EventNwsConnected(connectionId, requestInfo, connection, cancellationSource.Token));
+
+                        await ReceiveLoopAsync(connection, cancellationSource.Token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Cleanup(connectionId);
+
+                        if (InvkEvent.IsNwsDisconnected())
+                            InvkEvent.NwsDisconnected(new EventNwsDisconnected(connectionId));
+                    }
+                }
+            }
+            finally
+            {
+                if (ipReserved)
+                {
+                    _perIpCount.AddOrUpdate(capIp, 0, (_, cur) => cur > 0 ? cur - 1 : 0);
+                    if (_perIpCount.TryGetValue(capIp, out int val) && val <= 0)
+                        _perIpCount.TryRemove(new KeyValuePair<string, int>(capIp, val));
+                }
+
+                if (totalReserved)
+                    Interlocked.Decrement(ref _totalCount);
             }
         }
         #endregion

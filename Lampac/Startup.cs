@@ -66,49 +66,93 @@ namespace Lampac
             serviceCollection = services;
 
             #region IHttpClientFactory
-            services.AddHttpClient("proxy").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            // Why (security): previously every registered SocketsHttpHandler installed
+            // `RemoteCertificateValidationCallback = (..) => true`, permanently disabling
+            // chain verification for both trusted-origin clients ("base", "http2", etc.)
+            // and the proxy-family clients. Gate the skip per-family:
+            //   * "base", "baseNoRedirect", "http2", "http2NoRedirect", "http3"
+            //     → honour AppInit.insecureSkipVerify (default false → full verify).
+            //   * "proxy", "proxyRedirect", "proxyimg", "http2proxyimg"
+            //     → honour AppInit.proxyInsecureSkipVerify (default true for back-compat
+            //       with untrusted tracker/CDN origins; a warning is emitted below).
+            bool proxySkip = init.proxyInsecureSkipVerify;
+            bool baseSkip = init.insecureSkipVerify;
+
+            static void ApplySslSkip(System.Net.Security.SslClientAuthenticationOptions opt, bool skip)
             {
-                AllowAutoRedirect = false,
-                AutomaticDecompression = DecompressionMethods.None,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                UseCookies = false
+                if (skip)
+                    opt.RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true;
+            }
+
+            if (proxySkip)
+                Console.WriteLine("[security] AppInit.proxyInsecureSkipVerify=true — proxy/proxyimg HTTP clients will NOT validate upstream TLS certificates. Set to false once proxy targets have healthy TLS.");
+
+            if (baseSkip)
+                Console.WriteLine("[security] AppInit.insecureSkipVerify=true — base/http2/http3 HTTP clients will NOT validate upstream TLS certificates. This disables MITM protection for trusted upstreams.");
+
+            services.AddHttpClient("proxy").ConfigurePrimaryHttpMessageHandler(() =>
+            {
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = false,
+                    AutomaticDecompression = DecompressionMethods.None,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, proxySkip);
+                return h;
             });
 
-            services.AddHttpClient("proxyRedirect").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            services.AddHttpClient("proxyRedirect").ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.None,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.None,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, proxySkip);
+                return h;
             });
 
-            services.AddHttpClient("proxyimg").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            services.AddHttpClient("proxyimg").ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.None,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.None,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, proxySkip);
+                return h;
             });
 
-            services.AddHttpClient("base").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            services.AddHttpClient("base").ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, baseSkip);
+                return h;
             });
 
-            services.AddHttpClient("baseNoRedirect").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            services.AddHttpClient("baseNoRedirect").ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = false,
-                AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = false,
+                    AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, baseSkip);
+                return h;
             });
 
             services.AddHttpClient("http2", client =>
@@ -116,14 +160,18 @@ namespace Lampac
                 client.DefaultRequestVersion = HttpVersion.Version20;
                 client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
             })
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                EnableMultipleHttp2Connections = true,
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    EnableMultipleHttp2Connections = true,
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, baseSkip);
+                return h;
             });
 
             services.AddHttpClient("http2proxyimg", client =>
@@ -131,14 +179,18 @@ namespace Lampac
                 client.DefaultRequestVersion = HttpVersion.Version20;
                 client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
             })
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.None,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                EnableMultipleHttp2Connections = true,
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.None,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    EnableMultipleHttp2Connections = true,
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, proxySkip);
+                return h;
             });
 
             services.AddHttpClient("http2NoRedirect", client =>
@@ -146,14 +198,18 @@ namespace Lampac
                 client.DefaultRequestVersion = HttpVersion.Version20;
                 client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
             })
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = false,
-                AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                EnableMultipleHttp2Connections = true,
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = false,
+                    AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    EnableMultipleHttp2Connections = true,
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, baseSkip);
+                return h;
             });
 
             services.AddHttpClient("http3", client =>
@@ -161,14 +217,18 @@ namespace Lampac
                 client.DefaultRequestVersion = HttpVersion.Version30;
                 client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
             })
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(() =>
             {
-                AllowAutoRedirect = true,
-                AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                SslOptions = { RemoteCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true },
-                PooledConnectionLifetime = TimeSpan.FromMinutes(30),
-                EnableMultipleHttp2Connections = true,
-                UseCookies = false
+                var h = new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = true,
+                    AutomaticDecompression = DecompressionMethods.Brotli | DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+                    EnableMultipleHttp2Connections = true,
+                    UseCookies = false
+                };
+                ApplySslSkip(h.SslOptions, baseSkip);
+                return h;
             });
 
             services.RemoveAll<IHttpMessageHandlerBuilderFilter>();
@@ -579,8 +639,19 @@ namespace Lampac
 
             app.UseBaseMod();
 
-            if (!init.multiaccess || init.useDeveloperExceptionPage)
+            // Why (security): previously the gate was `!init.multiaccess || init.useDeveloperExceptionPage`,
+            // and the default multiaccess=false meant fresh installs (including production deployments)
+            // rendered full stack traces with source snippets on any unhandled exception. Require BOTH
+            // an explicit opt-in AND the ASP.NET Core "Development" environment before exposing the dev
+            // page. Production traffic routes to the generic /error handler (500, no body detail).
+            if (init.useDeveloperExceptionPage && env.IsDevelopment())
+            {
                 app.UseDeveloperExceptionPage();
+            }
+            else
+            {
+                app.UseExceptionHandler("/error");
+            }
 
             applicationLifetime.ApplicationStopping.Register(OnShutdown);
 

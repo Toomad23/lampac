@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Shared;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using Shared.Models;
 using Shared.Models.Proxy;
 using System;
@@ -91,6 +92,15 @@ namespace Lampac.Engine.Middlewares
             else
             {
                 if (!init.enable)
+                {
+                    httpContext.Response.StatusCode = 403;
+                    return;
+                }
+
+                // In the non-encrypt branch the upstream URL is reflected straight from the
+                // caller. Without SsrfGuard a remote user could proxy requests to loopback /
+                // RFC1918 / cloud metadata endpoints through this middleware.
+                if (!SsrfGuard.IsAllowedPublicUriBasic(servUri))
                 {
                     httpContext.Response.StatusCode = 403;
                     return;

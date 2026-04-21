@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Caching.Memory;
 using Shared;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using Shared.Models;
 using System;
 using System.Buffers;
@@ -114,6 +115,15 @@ namespace Lampac.Engine.Middlewares
                         httpContext.Response.StatusCode = 403;
                         return;
                     }
+
+                    // Non-encrypt branch forwards the caller-controlled path to HttpClient.
+                    // Without SsrfGuard an attacker can coerce the server into issuing
+                    // requests to loopback / RFC1918 / cloud metadata endpoints.
+                    if (!SsrfGuard.IsAllowedPublicUriBasic(href))
+                    {
+                        httpContext.Response.StatusCode = 403;
+                        return;
+                    }
                 }
 
                 if (string.IsNullOrWhiteSpace(href) || !href.StartsWith("http"))
@@ -185,7 +195,7 @@ namespace Lampac.Engine.Middlewares
                 string memKeyErrorDownload = $"ProxyImg:ErrorDownload:{href}";
                 if (memoryCache.TryGetValue(memKeyErrorDownload, out _))
                 {
-                    httpContext.Response.Redirect(href);
+                    SafeRedirectOrNotFound(httpContext, href);
                     return;
                 }
 
@@ -258,7 +268,7 @@ namespace Lampac.Engine.Middlewares
                                     memoryCache.Set(memKeyErrorDownload, 0, DateTime.Now.AddSeconds(5));
 
                                 proxyManager?.Refresh();
-                                httpContext.Response.Redirect(href);
+                                SafeRedirectOrNotFound(httpContext, href);
                                 return;
                             }
 
@@ -349,7 +359,7 @@ namespace Lampac.Engine.Middlewares
                                     memoryCache.Set(memKeyErrorDownload, 0, DateTime.Now.AddSeconds(5));
 
                                 proxyManager?.Refresh();
-                                httpContext.Response.Redirect(href);
+                                SafeRedirectOrNotFound(httpContext, href);
                                 return;
                             }
 
@@ -386,7 +396,7 @@ namespace Lampac.Engine.Middlewares
                                             }
 
                                             proxyManager?.Refresh();
-                                            httpContext.Response.Redirect(href);
+                                            SafeRedirectOrNotFound(httpContext, href);
                                             return;
                                         }
                                     }
@@ -422,6 +432,22 @@ namespace Lampac.Engine.Middlewares
                 }
             }
 
+
+        #region SafeRedirectOrNotFound
+        // Why: Response.Redirect(href) with an attacker-controlled URL is an open-redirect
+        // primitive, and also lets external users nudge the browser into fetching RFC1918
+        // resources on the LAN side. SsrfGuard.IsAllowedPublicUriBasic enforces http(s)
+        // scheme + rejects private/loopback/link-local IP literals. For DNS names we accept
+        // the lookup cost isn't done here (redirect is client-side) but the scheme/IP check
+        // is enough to close the obvious open-redirect.
+        static void SafeRedirectOrNotFound(HttpContext httpContext, string href)
+        {
+            if (SsrfGuard.IsAllowedPublicUriBasic(href))
+                httpContext.Response.Redirect(href);
+            else
+                httpContext.Response.StatusCode = 404;
+        }
+        #endregion
 
         #region Download
         async Task<(bool success, string contentType)> Download(Stream ms, string url, CancellationToken cancellationToken, List<HeadersModel> headers = null, WebProxy proxy = null)

@@ -5,6 +5,7 @@ using Microsoft.Playwright;
 using Newtonsoft.Json;
 using Shared;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using Shared.Models;
 using Shared.Models.Base;
 using Shared.PlaywrightCore;
@@ -103,6 +104,28 @@ namespace Lampac.Controllers
 
             if (string.IsNullOrWhiteSpace(model?.url))
                 return BadRequest("url is empty");
+
+            // Defense-in-depth: token auth allows callers to specify arbitrary upstream URLs.
+            // Reject requests that resolve to private/loopback/link-local addresses so a stolen
+            // token cannot be used to probe the internal network or cloud metadata endpoints.
+            if (!await SsrfGuard.IsAllowedPublicUriAsync(model.url).ConfigureAwait(false))
+                return BadRequest("url is not allowed");
+
+            // Caller-supplied proxy can be abused to pivot requests via attacker-controlled
+            // hosts; require admin cookie before honoring it. Otherwise drop both fields and
+            // fall back to the server's default proxy policy.
+            if (!string.IsNullOrEmpty(model.proxy) || !string.IsNullOrEmpty(model.proxy_name))
+            {
+                bool isAdmin = HttpContext.Request.Cookies.TryGetValue("passwd", out string passwd)
+                    && !string.IsNullOrEmpty(AppInit.rootPasswd)
+                    && CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd);
+
+                if (!isAdmin)
+                {
+                    model.proxy = null;
+                    model.proxy_name = null;
+                }
+            }
 
             InvkEvent.CorseuRequest(model);
 

@@ -43,6 +43,26 @@ namespace Shared.PlaywrightCore
                     = "d52f9f1b03eca305dbaa23e251fe612efbb48a99aaeab6ffa073ee1c111b28e0",
                 ["https://github.com/lampac-talks/lampac/releases/download/browsers/node-win-arm64.exe"]
                     = "b37c6950508f266d066deb91abe2050fcd3f19e34c86ca89eed72efb40090b57",
+
+                // Chrome bundles — Linux
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-linux-x64.zip"]
+                    = "8ef82969155181bee2006e2625441e91eaccad4a55c5be37e2cbf5aeedd511cc",
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-linux-x86.zip"]
+                    = "c042dc4818a4a3a5c9edc8bf2db79fe2588b0a0db620e306c6666881b54d9c81",
+
+                // Chrome bundles — macOS
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-mac-x64.zip"]
+                    = "0277df26b4513196d594ae0cb2db81c7669a374bc63edbb8b9e46178e99e5a1d",
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-mac-arm64.zip"]
+                    = "f7ead0781cea767ff37d3ffcfe7d5c8df98b6e83cad75c22eddd9694caad1461",
+
+                // Chrome bundles — Windows
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-win-x64.zip"]
+                    = "688e1504cb70e6d1e6cbb816ccc85364c491ba26a7688d8703c2d98a2cd95c10",
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-win-x86.zip"]
+                    = "608b2304d823ae3e59e4791a6c5791f793f3fbfbcdda36f52b67bbe27fbce196",
+                ["https://github.com/lampac-talks/lampac/releases/download/browsers/chrome-win-arm64.zip"]
+                    = "2f7232881a3b0d4c150b59619dd7ffb514c2fae97153690b10ab742a8da589f9",
             };
 
         /// <summary>Returns the hex SHA-256 pin for a given download URL, or null when unpinned.</summary>

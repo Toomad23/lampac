@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-
-ver=$(curl -k -s https://api.github.com/repos/lampac-talks/lampac/releases/latest | grep tag_name | sed s/[^0-9]//g)
-upver=$(curl -k -s http://noah.lampac.sh/update/$ver.txt)
-
-if [[ ${#upver} -eq 8 ]]; then
-	curl -L -k -o update.zip http://noah.lampac.sh/update/$upver.zip
-	unzip -o update.zip
-	rm -f update.zip
-fi
+#
+# DISABLED (supply-chain, HIGH-11): the original script pulled a zip over
+# plaintext HTTP from noah.lampac.sh with TLS verification explicitly
+# skipped (`curl -k`), then unzipped it on top of /home without any
+# authenticity check. That is an arbitrary-code-execution vector for
+# anyone on-path between the container host and noah.lampac.sh.
+#
+# This file is kept only for upstream compatibility (so `git merge` from
+# immisterio/lampac does not conflict). It is no longer invoked from any
+# Dockerfile in this fork. If you need the upstream hot-patch behaviour,
+# fetch a pinned HTTPS URL and verify a SHA-256 before unzipping.
+#
+# Refuse to run by default — fail closed.
+echo "update.sh is disabled in this fork (supply-chain hardening). See file header." >&2
+exit 1

@@ -1,4 +1,7 @@
-FROM debian:12.5-slim
+# Why (MED, base-image pinning): `debian:12.5-slim` is a mutable tag. Pin
+# by digest so a rebuild always produces the same base, and updates are a
+# deliberate PR rather than a silent pull. Digest captured 2026-04-21.
+FROM debian:12.5-slim@sha256:67f3931ad8cb1967beec602d8c0506af1e37e8d73c2a0b38b181ec5d8560d395
 
 EXPOSE 9118
 WORKDIR /home
@@ -11,14 +14,28 @@ RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnet
     && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet \
     && rm dotnet.tar.gz
 
-RUN curl -L -o publish.zip https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip \
+# TODO (supply-chain, HIGH-11 partial): publish.zip is a moving target keyed
+# to the latest lampac-talks release. We keep the existing download (over
+# HTTPS, with curl -fSL) but do not yet sha256-verify it. Pin this once the
+# downstream release cadence is stable (or switch to COPY --from=build via
+# amd64.selfbuild which is the secure path used by CI).
+RUN curl -fSL -o publish.zip https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip \
     && unzip -o publish.zip && rm -f publish.zip && rm -rf merchant \
     && rm -rf runtimes/os* && rm -rf runtimes/win* && rm -rf runtimes/linux-arm runtimes/linux-arm64 runtimes/linux-musl-arm64 runtimes/linux-musl-x64 \
     && touch isdocker
 
-RUN curl -s https://raw.githubusercontent.com/lampac-talks/lampac/main/Build/Docker/update.sh | bash
+# Why (HIGH-11): dropped `curl -k -s http://noah.lampac.sh/update/... | bash`.
+# That pipe ran arbitrary shell over plaintext HTTP with TLS verification
+# explicitly skipped (`-k`). Any on-path attacker could replace the script
+# body with their own. The update.sh file is retained in the repo for
+# upstream compatibility but is no longer executed during image build.
 
-RUN mkdir -p torrserver && curl -L -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-amd64 \
+# Why (HIGH-8, supply-chain): pin TorrServer to MatriX.135 and verify the
+# SHA-256 of the downloaded binary against a hash computed from the vetted
+# release bytes. If upstream swaps the asset, the build fails loudly.
+RUN mkdir -p torrserver \
+    && curl -fSL -o torrserver/TorrServer-linux https://github.com/YouROK/TorrServer/releases/download/MatriX.135/TorrServer-linux-amd64 \
+    && echo "e8df23592ff44ccaf447d55adde3c625cd2d9de9b2af994aacd2e579d8ea174a  torrserver/TorrServer-linux" | sha256sum -c - \
     && chmod +x torrserver/TorrServer-linux
 
 RUN mkdir -p .playwright/node/linux-x64 && curl -L -o .playwright/node/linux-x64/node https://github.com/immisterio/playwright/releases/download/chrome/node-linux-x64 \

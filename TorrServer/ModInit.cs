@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Shared.Engine;
+using Shared.Engine.Utilities;
 using Shared.Models.Module;
 using System;
 using System.Diagnostics;
@@ -159,22 +160,33 @@ namespace TorrServer
             ThreadPool.QueueUserWorkItem(async _ =>
             {
                 #region downloadUrl
+                string assetName;
                 string downloadUrl;
                 if (Environment.OSVersion.Platform == PlatformID.Win32NT)
                 {
-                    downloadUrl = "https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-windows-amd64.exe";
+                    assetName = "TorrServer-windows-amd64.exe";
+                    downloadUrl = "https://github.com/YouROK/TorrServer/releases/latest/download/" + assetName;
                     if (conf.releases != "latest")
-                        downloadUrl = $"https://github.com/YouROK/TorrServer/releases/download/{conf.releases}/TorrServer-windows-amd64.exe";
+                        downloadUrl = $"https://github.com/YouROK/TorrServer/releases/download/{conf.releases}/{assetName}";
                 }
                 else
                 {
                     string uname = (await Bash.Run("uname -m")) ?? string.Empty;
                     string arch = uname.Contains("x86_64") ? "amd64" : (uname.Contains("i386") || uname.Contains("i686")) ? "386" : uname.Contains("aarch64") ? "arm64" : uname.Contains("armv7") ? "arm7" : uname.Contains("armv6") ? "arm5" : "amd64";
 
-                    downloadUrl = "https://github.com/YouROK/TorrServer/releases/latest/download/TorrServer-linux-" + arch;
+                    assetName = "TorrServer-linux-" + arch;
+                    downloadUrl = "https://github.com/YouROK/TorrServer/releases/latest/download/" + assetName;
                     if (conf.releases != "latest")
-                        downloadUrl = $"https://github.com/YouROK/TorrServer/releases/download/{conf.releases}/TorrServer-linux-" + arch;
+                        downloadUrl = $"https://github.com/YouROK/TorrServer/releases/download/{conf.releases}/{assetName}";
                 }
+
+                // Why (supply-chain): upstream GitHub release assets are delivered over TLS but
+                // are a classic supply-chain target (compromised CI key → poisoned binary). We
+                // pin a SHA-256 per (tag, asset) pair for the tags we have vetted. If the
+                // operator points `releases` at an unpinned tag or `latest`, we download but
+                // refuse to chmod+x and abort with a loud warning — the operator must update
+                // the pin map before the new binary will run. See TorrServerHashPins.
+                string expectedSha = TorrServerHashPins.Resolve(conf.releases, assetName);
                 #endregion
 
                 #region updatet/install
@@ -203,21 +215,39 @@ namespace TorrServer
 
                         if (!File.Exists(tspath))
                         {
-                            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                            tsprocess?.Dispose();
+                            bool success = await Http.DownloadFile(downloadUrl, tspath, timeoutSeconds: 200);
+                            if (!success)
                             {
-                                tsprocess?.Dispose();
-                                bool success = await Http.DownloadFile(downloadUrl, tspath, timeoutSeconds: 200);
-                                if (!success)
-                                    File.Delete(tspath);
+                                try { if (File.Exists(tspath)) File.Delete(tspath); } catch { }
+                                return;
+                            }
+
+                            // Why: verify the downloaded binary against a pinned SHA-256
+                            // before making it executable. Even one mismatched byte means
+                            // we refuse to chmod+x and delete the file — fail-closed so a
+                            // compromised GitHub release cannot RCE our host.
+                            if (!string.IsNullOrEmpty(expectedSha))
+                            {
+                                string actual = ZipSafe.ComputeSha256Hex(tspath);
+                                if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Console.WriteLine($"TorrServer: SHA-256 MISMATCH for {assetName} (tag {conf.releases}); expected {expectedSha}, got {actual}. Deleting binary.");
+                                    try { File.Delete(tspath); } catch { }
+                                    return;
+                                }
+
+                                if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+                                    Bash.Invoke($"chmod +x {tspath}");
                             }
                             else
                             {
-                                tsprocess?.Dispose();
-                                bool success = await Http.DownloadFile(downloadUrl, tspath, timeoutSeconds: 200);
-                                if (success)
-                                    Bash.Invoke($"chmod +x {tspath}");
-                                else
-                                    Bash.Invoke($"rm -f {tspath}");
+                                // Unpinned tag/asset — don't silently execute an unverified
+                                // binary. Remove it and tell the operator.
+                                Console.WriteLine($"TorrServer: no SHA-256 pin for tag '{conf.releases}' asset '{assetName}'. Binary will not be executed. " +
+                                                  "Update TorrServerHashPins or downgrade 'releases' to a pinned tag.");
+                                try { File.Delete(tspath); } catch { }
+                                return;
                             }
                         }
                     }

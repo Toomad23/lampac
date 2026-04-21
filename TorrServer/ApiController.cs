@@ -65,7 +65,13 @@ namespace TorrServer.Controllers
                 file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_password'[^\n\r]+",
                     $"Lampa.Storage.set('torrserver_password','{HttpUtility.JavaScriptStringEncode(tsPasswd)}');");
 
-                string login = !string.IsNullOrEmpty(token) ? token : user.id;
+                // Why: Lampa Android builds external-player URLs as http://login:pass@host/...
+                // A login that itself contains '@' (e.g. an email) produces two '@' in the
+                // userinfo component and breaks URL parsers like VLC. Percent-encode the
+                // login so the userinfo has a single '@' delimiter; the Basic-auth handler
+                // below UnescapeDataString's the decoded username before findUser() so both
+                // encoded and raw forms authenticate identically.
+                string login = !string.IsNullOrEmpty(token) ? token : Uri.EscapeDataString(user.id ?? string.Empty);
                 file = Regex.Replace(file, "Lampa.Storage.set\\('torrserver_login'[^\n\r]+",
                     $"Lampa.Storage.set('torrserver_login','{HttpUtility.JavaScriptStringEncode(login)}');");
             }
@@ -229,7 +235,11 @@ namespace TorrServer.Controllers
 
                             if (decodedString.Length == 2)
                             {
-                                login = decodedString[0].ToLowerAndTrim();
+                                // Decode percent-escaped '@' (and friends) so a login like
+                                // "scorpion_respect%40mail.ru" — produced by ts.js injection
+                                // to keep external-player URLs parseable — matches the raw
+                                // email stored in accsdb.
+                                login = Uri.UnescapeDataString(decodedString[0]).ToLowerAndTrim();
                                 passwd = decodedString[1];
                             }
                         }

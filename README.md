@@ -27,13 +27,102 @@ Lampac NextGen - https://github.com/lampac-nextgen/lampac
 
 ---
 
+# Установка (этот форк, Docker)
+
+Рекомендуемый способ — универсальный скрипт `setup.sh`. Он ставит Docker (если нет), генерирует конфиги, стартует контейнер на `ghcr.io/toomad23/lampac:main` и проверяет готовность.
+
+## Интерактивная установка (задаст все вопросы)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Toomad23/lampac/main/setup.sh)
+```
+
+## Без вопросов — разом задать все параметры
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Toomad23/lampac/main/setup.sh | \
+  bash -s -- --yes \
+    --port 9118 \
+    --admin-email you@example.com \
+    --ts-passwd 'MyStrongPass1'
+```
+
+Или с автогенерацией пароля TorrServer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Toomad23/lampac/main/setup.sh | \
+  bash -s -- --yes --admin-email you@example.com
+```
+
+Пароль будет напечатан в конце — сохраните его.
+
+## Все флаги
+
+| Флаг | По умолчанию | Назначение |
+|---|---|---|
+| `--install-dir PATH` | `/opt/lampac` | Каталог конфигов и томов |
+| `--port N` | `9118` | Порт HTTP |
+| `--ts-passwd STRING` | авто | Пароль TorrServer (≥8 символов) |
+| `--admin-email EMAIL` | — | Включает `accsdb` и добавляет email |
+| `--admin-expires DATE` | `2030-01-01T00:00:00` | Срок действия доступа |
+| `--no-accsdb` | — | Открытый доступ (без авторизации) |
+| `--disable-ts` | — | Выключить встроенный TorrServer |
+| `--disable-dlna` | — | Выключить модуль DLNA |
+| `--enable-sisi` | — | Включить 18+ модуль |
+| `--image REF` | `ghcr.io/toomad23/lampac:main` | Docker-образ |
+| `--container-name NAME` | `lampac` | Имя контейнера |
+| `--yes`, `-y` | — | Non-interactive |
+| `--help`, `-h` | — | Справка |
+
+## Обновление
+
+Повторный запуск `setup.sh --yes` обновит образ и пересоздаст контейнер. Конфиги сохраняются (создаётся `.bak.<timestamp>`).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Toomad23/lampac/main/setup.sh | bash -s -- --yes
+```
+
+## Структура после установки
+
+```
+/opt/lampac/
+├─ init.conf                 # основной конфиг + accsdb
+├─ module/
+│  ├─ manifest.json          # какие модули включены
+│  └─ TorrServer.conf        # defaultPasswd для /ts
+├─ dlna/                     # папка DLNA
+└─ docker-compose.yml        # для управления через docker compose
+```
+
+## Креды TorrServer UI (`/ts`)
+
+- **Логин:** email из `accsdb.accounts` (если accsdb выключен — любая непустая строка)
+- **Пароль:** значение `defaultPasswd` из `module/TorrServer.conf`
+
+Если пароль короче 8 символов или пуст — `/ts` вернёт 401 (fail-closed, PR #42). Поменять:
+
+```bash
+sudo sed -i 's/"defaultPasswd": ".*"/"defaultPasswd": "NewStrongPass1"/' /opt/lampac/module/TorrServer.conf
+sudo docker restart lampac
+```
+
+## Минимальные требования
+
+- Linux (Debian/Ubuntu/RPi/Synology) + Docker
+- 1 CPU, 1 GB RAM, 2 GB диска
+- Входящий TCP-порт (по умолчанию 9118)
+
+---
+
 # AI Документация
 
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lampac-talks/lampac)
 
-# Установка на linux
+---
 
-спасибо @nikk, @Denis
+# Альтернативные способы установки (upstream, bare-metal)
+
+## Linux через systemd (upstream-скрипт)
 
 ```bash
 curl -L -k -s https://lampac.sh | bash
@@ -45,7 +134,7 @@ curl -L -k -s https://lampac.sh | bash
 * Изменить или посмотреть порт можно в init.conf -
 ```grep "port" /home/lampac/init.conf```
 
-# Домашняя (облегченная) - linux
+## Домашняя (облегченная) - linux
 
 ```bash
 curl -L -k -s https://lampac.sh/home | bash
@@ -56,19 +145,19 @@ curl -L -k -s https://lampac.sh/home | bash
 * DLNA/Chromium/Firefox по умолчанию отключен, включается в init.conf
 * TorrServer по умолчанию отключен, включается в module/manifest.json
 
-# Установка на Windows
+## Windows
 
 1. Установить ".NET Core 9 (SDK Installer)" <https://github.com/dotnet/core/blob/main/release-notes/9.0/9.0.12/9.0.113.md>
 2. Распаковать <https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip>
 3. Запустить lampac.exe
 
-# Запуск в Docker
+## Docker без `setup.sh` (minimal)
 
 ```bash
-docker run -d -p 9118:9118 --restart always --name lampac lampac-talks/lampac
+docker run -d -p 9118:9118 --restart always --name lampac ghcr.io/toomad23/lampac:main
 ```
 
-**tags**: latest (linux/amd64) / arm32 (linux/arm/v7) / arm64 (linux/arm64/v8)
+**tags**: `main` (linux/amd64, авто-сборка из этого форка)
 
 # Запуск в Android
 

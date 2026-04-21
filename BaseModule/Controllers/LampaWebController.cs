@@ -13,6 +13,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
 using System.Web;
 using IO = System.IO;
@@ -43,7 +44,9 @@ namespace Lampac.Controllers
                 if (!memoryCache.TryGetValue($"LampaWeb.index:{AppInit.conf.LampaWeb.index}", out string html))
                 {
                     html = IO.File.ReadAllText($"wwwroot/{AppInit.conf.LampaWeb.index}");
-                    html = html.Replace("<head>", $"<head><base href=\"/{Regex.Match(AppInit.conf.LampaWeb.index, "^([^/]+)/").Groups[1].Value}/\" />");
+                    // Why: defence-in-depth, encode before templating into <base href="…">.
+                    string baseSegment = HtmlEncoder.Default.Encode(Regex.Match(AppInit.conf.LampaWeb.index, "^([^/]+)/").Groups[1].Value);
+                    html = html.Replace("<head>", $"<head><base href=\"/{baseSegment}/\" />");
 
                     memoryCache.Set($"LampaWeb.index:{AppInit.conf.LampaWeb.index}", html, DateTime.Now.AddMinutes(1));
                 }
@@ -499,7 +502,7 @@ namespace Lampac.Controllers
             sb = sb.Replace("{lampainit-invc}", FileCache.ReadAllText("plugins/lampainit-invc.js"));
             sb = sb.Replace("{initiale}", Regex.Replace(initiale, ",$", ""));
 
-            sb = sb.Replace("{country}", requestInfo.Country);
+            sb = sb.Replace("{country}", SafeCountry(requestInfo.Country));
             sb = sb.Replace("{localhost}", host);
             sb = sb.Replace("{deny}", string.Empty);
             sb = sb.Replace("{pirate_store}", string.Empty);
@@ -633,7 +636,7 @@ namespace Lampac.Controllers
                 sb = sb.Replace("{plugins}", string.Join(",", plugins));
             }
 
-            sb = sb.Replace("{country}", requestInfo.Country)
+            sb = sb.Replace("{country}", SafeCountry(requestInfo.Country))
                    .Replace("{localhost}", host);
 
             return Content(sb.ToString(), "application/javascript; charset=utf-8");
@@ -651,7 +654,7 @@ namespace Lampac.Controllers
 
             var sb = new StringBuilder(FileCache.ReadAllText("plugins/privateinit.js"));
 
-            sb = sb.Replace("{country}", requestInfo.Country)
+            sb = sb.Replace("{country}", SafeCountry(requestInfo.Country))
                    .Replace("{localhost}", host);
 
             if (AppInit.modules != null && AppInit.modules.FirstOrDefault(i => i.dll == "JacRed.dll" && i.enable) != null)
@@ -662,5 +665,17 @@ namespace Lampac.Controllers
             return Content(sb.ToString(), "application/javascript; charset=utf-8");
         }
         #endregion
+
+        // Why: {country} is reflected into a served JS body. Belt-and-braces whitelist in
+        // case a future caller bypasses the middleware/setter validation, and folds null
+        // to "" since StringBuilder.Replace(string, null) throws.
+        static string SafeCountry(string c)
+        {
+            if (string.IsNullOrEmpty(c) || c.Length != 2)
+                return string.Empty;
+            if (c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z')
+                return string.Empty;
+            return c;
+        }
     }
 }

@@ -93,7 +93,7 @@ namespace Lampac.Engine
                 {
                     isAdmin = true;
                 }
-                else if (Shared.Engine.HmacAuth.Validate(context.Request))
+                else if (await Shared.Engine.HmacAuth.ValidateAsync(context.Request).ConfigureAwait(false))
                 {
                     isAdmin = true;
                 }

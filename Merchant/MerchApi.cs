@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -17,12 +18,12 @@ namespace Merchant.Controllers
         [HttpGet]
         [AllowAnonymous]
         [Route("merchant/user")]
-        public ActionResult Index(string account_email, string passwd)
+        public async Task<ActionResult> Index(string account_email, string passwd)
         {
             // Previously [AllowAnonymous] with no passwd check — anyone could
             // enumerate subscribers by email and read expiry/group/ban fields.
             // Require the same rootPasswd as /merchant/payconfirm.
-            if (!IsAuthorized(Request, passwd, "/merchant/user"))
+            if (!await IsAuthorizedAsync(Request, passwd, "/merchant/user").ConfigureAwait(false))
                 return Content("incorrect passwd");
 
             string email = decodeEmail(account_email);
@@ -48,9 +49,9 @@ namespace Merchant.Controllers
         [HttpPost]
         [AllowAnonymous]
         [Route("merchant/payconfirm")]
-        public ActionResult ConfirmPay(string passwd, string account_email, string merch, string order, int days = 0)
+        public async Task<ActionResult> ConfirmPay(string passwd, string account_email, string merch, string order, int days = 0)
         {
-            if (!IsAuthorized(Request, passwd, "/merchant/payconfirm"))
+            if (!await IsAuthorizedAsync(Request, passwd, "/merchant/payconfirm").ConfigureAwait(false))
                 return Content("incorrect passwd");
 
             string email = decodeEmail(account_email);
@@ -71,12 +72,16 @@ namespace Merchant.Controllers
         // into access logs, referer headers, and proxy caches; the HMAC layer removes
         // the plaintext from the URL. Fallback kept for one release to give existing
         // operators time to update their automation. After that, remove the fallback.
-        static bool IsAuthorized(HttpRequest req, string passwd, string endpoint)
+        //
+        // Why async: round5 — HmacAuth now signs the request body hash; ValidateAsync
+        // buffers the body via EnableBuffering() before reading.
+        static async Task<bool> IsAuthorizedAsync(HttpRequest req, string passwd, string endpoint)
         {
-            if (HmacAuth.Validate(req))
+            if (await HmacAuth.ValidateAsync(req).ConfigureAwait(false))
                 return true;
 
-            if (!string.IsNullOrEmpty(passwd) && CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
+            if (!string.IsNullOrEmpty(passwd) && !string.IsNullOrEmpty(AppInit.rootPasswd) &&
+                CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
             {
                 LogDeprecatedPasswdAuth(endpoint);
                 return true;

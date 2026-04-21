@@ -9,6 +9,7 @@ using Shared.Models.Module;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using IO = System.IO;
 
@@ -167,7 +168,12 @@ namespace Lampac.Controllers
             }
 			catch (Exception ex) { return Json(new { error = true, ex = ex.Message }); }
 
-            var jo = JsonConvert.DeserializeObject<JObject>(json);
+            JObject jo;
+            try
+            {
+                jo = JsonConvert.DeserializeObject<JObject>(json);
+            }
+            catch (Exception ex) { return Json(new { error = true, ex = ex.Message }); }
 
 			JToken users = null;
             var accsdbNode = jo["accsdb"] as JObject;
@@ -179,13 +185,38 @@ namespace Lampac.Controllers
 					users = usersNode.DeepClone();
                     accsdbNode.Remove("users");
 
-                    IO.File.WriteAllText("users.json", JsonConvert.SerializeObject(users, Formatting.Indented));
+                    WriteAtomic("users.json", JsonConvert.SerializeObject(users, Formatting.Indented), backup: false);
                 }
             }
 
-            IO.File.WriteAllText("init.conf", JsonConvert.SerializeObject(jo, Formatting.Indented));
+            WriteAtomic("init.conf", JsonConvert.SerializeObject(jo, Formatting.Indented), backup: true);
 
             return Json(new { success = true });
+        }
+
+        // Why: WriteAllText non-atomically truncates+writes, so a crash mid-write
+        // leaves a corrupted init.conf that the next boot fails to parse. Rename
+        // via a sibling .tmp (atomic on POSIX/rename, atomic on Windows via
+        // MoveFileEx+REPLACE_EXISTING) and snapshot the previous content to .bak.
+        static void WriteAtomic(string path, string content, bool backup)
+        {
+            string tmp = path + ".tmp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+            IO.File.WriteAllText(tmp, content);
+
+            if (backup && IO.File.Exists(path))
+            {
+                try { IO.File.Copy(path, path + ".bak", overwrite: true); } catch { }
+            }
+
+            try
+            {
+                IO.File.Move(tmp, path, overwrite: true);
+            }
+            catch
+            {
+                try { if (IO.File.Exists(tmp)) IO.File.Delete(tmp); } catch { }
+                throw;
+            }
         }
 
         [HttpGet]
@@ -356,7 +387,7 @@ namespace Lampac.Controllers
             }
             catch (Exception ex) { return Json(new { error = true, ex = ex.Message }); }
 
-            IO.File.WriteAllText("sync.conf", json);
+            WriteAtomic("sync.conf", json, backup: true);
             return Json(new { success = true });
         }
         #endregion
@@ -757,7 +788,7 @@ namespace Lampac.Controllers
 
             modify?.Invoke(jo);
 
-            IO.File.WriteAllText("init.conf", JsonConvert.SerializeObject(jo, Formatting.Indented));
+            WriteAtomic("init.conf", JsonConvert.SerializeObject(jo, Formatting.Indented), backup: true);
         }
         #endregion
     }

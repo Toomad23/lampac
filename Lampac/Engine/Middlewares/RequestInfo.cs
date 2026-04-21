@@ -105,8 +105,12 @@ namespace Lampac.Engine.Middlewares
 
                                 if (httpContext.Request.Headers.TryGetValue("CF-IPCountry", out StringValues xcountry) && xcountry.Count > 0)
                                 {
-                                    if (!string.IsNullOrEmpty(xcountry[0]))
-                                        cf_country = xcountry[0];
+                                    // Why: CF-IPCountry is reflected into JS/HTML as {country}; only
+                                    // ISO alpha-2 codes are valid — anything else would be XSS.
+                                    string cc = xcountry[0];
+                                    if (!string.IsNullOrEmpty(cc) && cc.Length == 2 &&
+                                        cc[0] >= 'A' && cc[0] <= 'Z' && cc[1] >= 'A' && cc[1] <= 'Z')
+                                        cf_country = cc;
                                 }
 
                                 break;

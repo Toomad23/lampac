@@ -184,7 +184,8 @@ ip:9118/admin
 6. Backup   - <http://IP:9118/backup.js>
 7. Синхронизация   - <http://IP:9118/sync.js>
 8. TorrServer      - <http://IP:9118/ts.js>
-9. Парсер Jackett  - IP:9118
+9. Транскодирование - <http://IP:9118/transcoding.js>
+10. Парсер Jackett  - IP:9118
 
 # Плагины для Lampa Lite
 
@@ -208,6 +209,43 @@ PornHub, PornHubPremium, Bongacams, Chaturbate, Cam4, Ebalovo, Eporner, HQporner
 # Торренты
 
 Kinozal, NNM-Club, Rutor, Rutracker, Megapeer, Torrentby, Bitru, Toloka (Украинский), BigFanGroup, Selezen, LostFilm, Anilibria, Animelayer, Anifilm
+
+# Транскодирование (звук во встроенном плеере)
+
+Встроенный HTML5-плеер Lampa не умеет AC3 / E-AC3 / DTS / FLAC — видео идёт, звука нет. Это частая картина при просмотре торрентов через TorrServer и BDRemux-релизов с CDN. Решение — на лету заворачивать поток в HLS с AAC через `ffmpeg` прямо в lampac. Видео копируется (`-c:v copy`), перекодируется только аудио — CPU-нагрузка минимальная.
+
+### 1. Включить в `init.conf`
+
+```json
+"transcoding": {
+  "enable": true,
+  "tempRoot": "cache/transcoding",
+  "idleTimeoutSec": 30,
+  "idleTimeoutSec_live": 30,
+  "maxConcurrentJobs": 2,
+  "allowHosts": ["mylampac.example.com", "192.168.1.10", "127.0.0.1", "localhost"]
+}
+```
+
+`allowHosts` — whitelist источников (`src`), откуда разрешено тянуть медиа. Должен содержать **все хосты, через которые Lampa видит твой lampac** (домен reverse-proxy + LAN-IP), иначе SSRF-guard вернёт `Source host is not allowed`. Пустой массив → fail-closed: пропускает только публичные хосты (TorrServer через LAN работать не будет).
+
+### 2. ffmpeg
+
+Ничего доустанавливать не нужно — при первом старте lampac сам скачает статически собранные `ffmpeg` и `ffprobe` в `./data/` (~200 МБ каждый). В логах контейнера увидишь `FFmpeg: Initialization` и `load module: Tracks.dll`.
+
+### 3. Плагин в Lampa
+
+В клиенте: **Настройки → Расширения → Добавить плагин** → `http://IP:9118/transcoding.js`. После этого в плеере (при воспроизведении, меню шестерёнки) появится пункт «Транскодирование» — включаешь на проблемной дорожке, lampac оборачивает стрим в HLS с AAC.
+
+### Проверка
+
+```bash
+curl -sI http://IP:9118/transcoding.js     # 200 OK, Content-Type: application/javascript
+curl -sI http://IP:9118/transcoding         # 200 OK (DOC с описанием эндпоинтов)
+docker logs lampac --tail 50 | grep -i ffmpeg   # "FFmpeg: Initialization"
+```
+
+Если плеер крутит, но не стартует — в логах будет команда `ffmpeg` и stderr процесса.
 
 # Источники с API для порталов
 

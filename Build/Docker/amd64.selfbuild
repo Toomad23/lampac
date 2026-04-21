@@ -2,9 +2,9 @@
 # Used by the GitHub Actions pipeline in .github/workflows/docker-publish.yml
 
 # ---------- build stage ----------
-# Digest captured 2026-04-21. Pinning mutable tags protects the build from
-# silent base-image swaps; bump deliberately on each release cut.
-FROM mcr.microsoft.com/dotnet/sdk:9.0@sha256:e04aef5e32fe25cea4641ecd2f2d8d7eca009f5d937bd545250f5ee5f35cf3b5 AS build
+# Digest captured 2026-04-22 for .NET 10.0 SDK. Pinning mutable tags protects
+# the build from silent base-image swaps; bump deliberately on each release cut.
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:6d7f69bc7bc9d4510ca255977b1f53ce52a79307e048a91450b2aecd63627cc3 AS build
 WORKDIR /src
 
 # Restore first for better layer caching
@@ -51,7 +51,7 @@ RUN apt-get update \
         ca-certificates curl unzip xz-utils sed chromium xvfb libnspr4 fontconfig \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/9.0.12/aspnetcore-runtime-9.0.12-linux-x64.tar.gz \
+RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.7/aspnetcore-runtime-10.0.7-linux-x64.tar.gz \
  && mkdir -p /usr/share/dotnet \
  && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet \
  && rm dotnet.tar.gz

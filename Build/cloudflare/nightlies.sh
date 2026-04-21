@@ -6,7 +6,7 @@ cat Build/cloudflare/Lampac.csproj > Lampac/Lampac.csproj
 ./dotnet/dotnet publish Lampac -c Release
 
 # Целевая директория
-publish_dir="Lampac/bin/Release/net9.0/publish"
+publish_dir="Lampac/bin/Release/net10.0/publish"
 
 # Удаляем все папки в runtimes кроме references
 for dir in "$publish_dir/runtimes"/*/; do
@@ -30,28 +30,28 @@ cp -R "$publish_dir"/* lpc/
 mkdir -p lpc/module
 
 ./dotnet/dotnet publish DLNA -c Release
-cp DLNA/bin/Release/net9.0/publish/DLNA.dll lpc/module/
+cp DLNA/bin/Release/net10.0/publish/DLNA.dll lpc/module/
 
 ./dotnet/dotnet publish JacRed -c Release
-cp JacRed/bin/Release/net9.0/publish/JacRed.dll lpc/module/
+cp JacRed/bin/Release/net10.0/publish/JacRed.dll lpc/module/
 
 ./dotnet/dotnet publish Merchant -c Release
-cp Merchant/bin/Release/net9.0/publish/Merchant.dll lpc/module/
+cp Merchant/bin/Release/net10.0/publish/Merchant.dll lpc/module/
 
 ./dotnet/dotnet publish Online -c Release
-cp Online/bin/Release/net9.0/publish/Online.dll lpc/module/
+cp Online/bin/Release/net10.0/publish/Online.dll lpc/module/
 
 ./dotnet/dotnet publish Catalog -c Release
-cp Catalog/bin/Release/net9.0/publish/Catalog.dll lpc/module/
+cp Catalog/bin/Release/net10.0/publish/Catalog.dll lpc/module/
 
 ./dotnet/dotnet publish SISI -c Release
-cp SISI/bin/Release/net9.0/publish/SISI.dll lpc/module/
+cp SISI/bin/Release/net10.0/publish/SISI.dll lpc/module/
 
 ./dotnet/dotnet publish TorrServer -c Release
-cp TorrServer/bin/Release/net9.0/publish/TorrServer.dll lpc/module/
+cp TorrServer/bin/Release/net10.0/publish/TorrServer.dll lpc/module/
 
 ./dotnet/dotnet publish Tracks -c Release
-cp Tracks/bin/Release/net9.0/publish/Tracks.dll lpc/module/
+cp Tracks/bin/Release/net10.0/publish/Tracks.dll lpc/module/
 
 mkdir -p lpc/basemod
 cp -R BaseModule/Controllers lpc/basemod/

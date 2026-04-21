@@ -56,28 +56,22 @@ namespace Merchant
                 (_, existing) => (existing.sem, DateTime.UtcNow.Ticks));
 
             // Opportunistic sweep — O(n) but n is bounded, runs at most once per add.
+            // Why: we intentionally DO NOT Dispose() evicted semaphores. A concurrent caller
+            // that acquired the ref before eviction may still hold Wait/Release on it;
+            // disposing here would throw ObjectDisposedException on their Release(). The GC
+            // reclaims the SemaphoreSlim (managed type) once no references remain.
             long thresholdTicks = DateTime.UtcNow.Add(-_payLocksTtl).Ticks;
             foreach (var kv in _payLocks)
             {
                 if (kv.Value.lastUsedTicks < thresholdTicks)
-                {
-                    if (_payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
-                    {
-                        try { kv.Value.sem.Dispose(); } catch { }
-                    }
-                }
+                    _payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value));
             }
 
             // Hard cap — if still over budget, evict oldest entries.
             if (_payLocks.Count > _payLocksMaxEntries)
             {
                 foreach (var kv in _payLocks.OrderBy(p => p.Value.lastUsedTicks).Take(_payLocks.Count - _payLocksMaxEntries))
-                {
-                    if (_payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
-                    {
-                        try { kv.Value.sem.Dispose(); } catch { }
-                    }
-                }
+                    _payLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value));
             }
 
             return entry.sem;

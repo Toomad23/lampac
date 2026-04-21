@@ -285,7 +285,10 @@ namespace Lampac.Engine
                     if (AppInit.conf.weblog.enable && Startup.WebLogEnableController)
                     {
                         string token = GetStringArg(args, 0);
-                        if (string.IsNullOrEmpty(AppInit.conf.weblog.token) || AppInit.conf.weblog.token == token)
+                        // Why: reject when the configured token is null/empty (was previously an open
+                        // endpoint) and switch to a constant-time compare to avoid timing oracles.
+                        string configuredToken = AppInit.conf.weblog.token;
+                        if (!string.IsNullOrEmpty(configuredToken) && Shared.Engine.CrypTo.FixedTimeEquals(token, configuredToken))
                             weblog_clients.AddOrUpdate(connection.ConnectionId, 0, static (_, __) => 0);
                     }
                     break;

@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shared;
+using Shared.Engine;
 using System.Web;
 
 namespace Lampac.Controllers
@@ -15,7 +16,11 @@ namespace Lampac.Controllers
             if (!AppInit.conf.weblog.enable)
                 return Content("Включите weblog в init.conf\n\n\"weblog\": {\n   \"enable\": true\n}", contentType: "text/plain; charset=utf-8");
 
-            if (!string.IsNullOrEmpty(AppInit.conf.weblog.token) && token != AppInit.conf.weblog.token)
+            // Why: previously an unset/empty weblog.token left the endpoint wide open (the
+            // !IsNullOrEmpty guard short-circuited the whole check). Require the token to be set
+            // and compare it in constant time to avoid leaking a prefix match through timing.
+            string configuredToken = AppInit.conf.weblog.token;
+            if (string.IsNullOrEmpty(configuredToken) || !CrypTo.FixedTimeEquals(token, configuredToken))
                 return Content("Используйте /weblog?token=my_key\n\n\"weblog\": {\n   \"enable\": true,\n   \"token\": \"my_key\"\n}", contentType: "text/plain; charset=utf-8");
 
             // pattern / receive are reflected into HTML attributes below; encode

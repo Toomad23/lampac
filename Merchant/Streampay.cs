@@ -91,15 +91,18 @@ namespace Merchant.Controllers
                 }
                 else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
                 {
-                    return Content("Invalid signature");
+                    // Why: previously this surfaced PSP errors as HTTP 200 with a plain-text body,
+                    // which misleads callers (and automated monitors) into treating an auth / policy
+                    // rejection as success. Propagate a matching status code with the reason as body.
+                    return StatusCode(401, "Invalid signature");
                 }
                 else if (response.StatusCode == System.Net.HttpStatusCode.NotAcceptable)
                 {
-                    return Content("Invalid request data");
+                    return StatusCode(400, "Invalid request data");
                 }
                 else if (response.StatusCode == System.Net.HttpStatusCode.InternalServerError)
                 {
-                    return Content("Internal server error");
+                    return StatusCode(502, "Internal server error");
                 }
             }
 

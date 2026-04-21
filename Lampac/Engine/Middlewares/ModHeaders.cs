@@ -85,6 +85,13 @@ namespace Lampac.Engine.Middlewares
         ], StringComparer.OrdinalIgnoreCase);
 
 
+        // Why: Access-Control-Allow-Headers must only contain valid HTTP token characters.
+        // Reflecting arbitrary user input into a response header lets a caller inject CRLF,
+        // spaces, or other smuggling payloads. Per RFC7230 a header name is a "token" of
+        // tchar characters; we use a conservative [A-Za-z0-9-]+ subset that covers every
+        // header name any real client asks for.
+        static readonly Regex _headerNameRegex = new Regex("^[A-Za-z0-9-]+$", RegexOptions.Compiled);
+
         static bool GetAllowHeaders(HttpContext httpContext, out HashSet<string> headersSet)
         {
             if (httpContext.Request.Headers.TryGetValue("Access-Control-Request-Headers", out var requestedHeaders))
@@ -93,8 +100,15 @@ namespace Lampac.Engine.Middlewares
 
                 foreach (string header in requestedHeaders.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries))
                 {
-                    if (!string.IsNullOrWhiteSpace(header))
-                        headersSet.Add(header.Trim());
+                    if (string.IsNullOrWhiteSpace(header))
+                        continue;
+
+                    string trimmed = header.Trim();
+
+                    if (!_headerNameRegex.IsMatch(trimmed))
+                        continue;
+
+                    headersSet.Add(trimmed);
                 }
 
                 return true;

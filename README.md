@@ -147,7 +147,7 @@ curl -L -k -s https://lampac.sh/home | bash
 
 ## Windows
 
-1. Установить ".NET Core 9 (SDK Installer)" <https://github.com/dotnet/core/blob/main/release-notes/9.0/9.0.12/9.0.113.md>
+1. Установить ".NET 10 (SDK Installer)" <https://dotnet.microsoft.com/en-us/download/dotnet/10.0>
 2. Распаковать <https://github.com/lampac-talks/lampac/releases/latest/download/publish.zip>
 3. Запустить lampac.exe
 

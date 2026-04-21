@@ -9,7 +9,7 @@ WORKDIR /home
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip sed chromium xvfb libnspr4 fontconfig \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/9.0.12/aspnetcore-runtime-9.0.12-linux-x64.tar.gz \
+RUN curl -fSL -o dotnet.tar.gz https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.7/aspnetcore-runtime-10.0.7-linux-x64.tar.gz \
     && mkdir -p /usr/share/dotnet \
     && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet \
     && rm dotnet.tar.gz

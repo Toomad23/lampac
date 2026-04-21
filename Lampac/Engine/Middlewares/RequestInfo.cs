@@ -46,7 +46,10 @@ namespace Lampac.Engine.Middlewares
 
             bool IsLocalRequest = false;
             string cf_country = null;
-            string clientIp = httpContext.Connection.RemoteIpAddress.ToString();
+            string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "0.0.0.0";
+            // Why (FC-1): keep IsLocalIp for RFC1918/ULA classification (the
+            // RequestModel.IsLocalIp flag and the allowExternalIpAccessToLocalRequest
+            // check below are about "private network", not "proof of loopback").
             bool IsLocalIp = Shared.Engine.Utilities.IPNetwork.IsLocalIp(clientIp);
 
             if (httpContext.Request.Headers.TryGetValue("localrequest", out StringValues _localpasswd) && _localpasswd.Count > 0)
@@ -54,7 +57,7 @@ namespace Lampac.Engine.Middlewares
                 if (!IsLocalIp && !AppInit.conf.BaseModule.allowExternalIpAccessToLocalRequest)
                     return httpContext.Response.WriteAsync("allowExternalIpAccessToLocalRequest false", httpContext.RequestAborted);
 
-                if (_localpasswd[0] != AppInit.rootPasswd)
+                if (!Shared.Engine.CrypTo.FixedTimeEquals(_localpasswd[0], AppInit.rootPasswd))
                     return httpContext.Response.WriteAsync("error passwd", httpContext.RequestAborted);
 
                 IsLocalRequest = true;
@@ -62,7 +65,12 @@ namespace Lampac.Engine.Middlewares
                 // x-client-ip override is trusted only from a real loopback socket.
                 // Allowing it from remote callers lets anyone with rootPasswd spoof
                 // their source IP, bypassing per-IP rate limiting and audit logs.
-                if (IsLocalIp && httpContext.Request.Headers.TryGetValue("x-client-ip", out StringValues xip) && xip.Count > 0)
+                //
+                // Why (FC-1): tighten to IsStrictLoopback — if someone on the
+                // LAN (e.g. 192.168.x.y) knows rootPasswd, they should still
+                // not be able to rewrite their logged IP. Only a process on
+                // the host itself may do that.
+                if (Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(clientIp) && httpContext.Request.Headers.TryGetValue("x-client-ip", out StringValues xip) && xip.Count > 0)
                 {
                     if (!string.IsNullOrEmpty(xip[0]))
                         clientIp = xip[0];

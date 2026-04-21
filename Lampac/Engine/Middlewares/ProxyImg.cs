@@ -13,6 +13,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -179,19 +180,17 @@ namespace Lampac.Engine.Middlewares
                 }
                 #endregion
 
-                var semaphore = cacheimg ?  new SemaphorManager(outFile, ctsHttp.Token) : null;
+                using var semaphore = cacheimg ? new SemaphorManager(outFile, ctsHttp.Token) : null;
 
-                try
+                string memKeyErrorDownload = $"ProxyImg:ErrorDownload:{href}";
+                if (memoryCache.TryGetValue(memKeyErrorDownload, out _))
                 {
-                    string memKeyErrorDownload = $"ProxyImg:ErrorDownload:{href}";
-                    if (memoryCache.TryGetValue(memKeyErrorDownload, out _))
-                    {
-                        httpContext.Response.Redirect(href);
-                        return;
-                    }
+                    httpContext.Response.Redirect(href);
+                    return;
+                }
 
-                    if (semaphore != null)
-                        await semaphore.WaitAsync().ConfigureAwait(false);
+                if (semaphore != null)
+                    await semaphore.WaitAsync().ConfigureAwait(false);
 
                     #region cacheFiles
                     if (cacheimg)
@@ -421,13 +420,7 @@ namespace Lampac.Engine.Middlewares
                         #endregion
                     }
                 }
-                finally
-                {
-                    if (semaphore != null)
-                        semaphore.Release();
-                }
             }
-        }
 
 
         #region Download
@@ -552,21 +545,33 @@ namespace Lampac.Engine.Middlewares
             if (imaGikPath == null)
                 imaGikPath = File.Exists("/usr/bin/magick") ? "magick" : "convert";
 
-            string inputFilePath = getTempFileName();
+            // Why (M-5): isolate each request under a fresh 0700 subdir to block
+            // pre-creation/race attacks by other local users and to prevent concurrent
+            // requests from colliding on predictable temp filenames.
+            string workDir = createIsolatedTempDir();
+
+            // Why (M-5): names live inside the 0700 workDir, so a short stable name is safe
+            // and still unpredictable because the parent dir segment is CSPRNG-random.
+            string inputFilePath = Path.Combine(workDir, "in");
 
             bool outFileIsTemp = false;
             if (outputFilePath == null)
             {
                 outFileIsTemp = true;
-                outputFilePath = getTempFileName();
+                outputFilePath = Path.Combine(workDir, "out");
             }
 
             try
             {
                 inArray.Position = 0;
 
-                using (var streamFile = File.OpenWrite(inputFilePath))
+                // Why (M-5): CreateNew fails loudly on any pre-existing file instead of
+                // silently truncating, so concurrent name collisions surface as IOException.
+                using (var streamFile = new FileStream(inputFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
+                {
+                    TryRestrictToOwner(inputFilePath);
                     await inArray.CopyToAsync(streamFile, PoolInvk.bufferSize);
+                }
 
                 string argsize = width > 0 && height > 0 ? $"{width}x{height}" : width > 0 ? $"{width}x" : $"x{height}";
 
@@ -588,25 +593,26 @@ namespace Lampac.Engine.Middlewares
 
                 if (outFileIsTemp)
                 {
+                    // Why (M-5): tighten perms on the file magick just wrote before we read it.
+                    TryRestrictToOwner(outputFilePath);
+
                     using (var streamFile = File.OpenRead(outputFilePath))
                         await streamFile.CopyToAsync(outArray, PoolInvk.bufferSize);
                 }
 
                 return true;
             }
-            catch 
-            { 
-                return false; 
+            catch
+            {
+                return false;
             }
             finally
             {
+                // Why (M-5): nuke the per-request subdir so temp artefacts never leak beyond the call.
                 try
                 {
-                    if (File.Exists(inputFilePath))
-                        File.Delete(inputFilePath);
-
-                    if (outFileIsTemp && File.Exists(outputFilePath))
-                        File.Delete(outputFilePath);
+                    if (workDir != null && Directory.Exists(workDir))
+                        Directory.Delete(workDir, recursive: true);
                 }
                 catch { }
             }
@@ -615,15 +621,49 @@ namespace Lampac.Engine.Middlewares
 
         static bool? shm = null;
 
-        static string getTempFileName()
+        static string getTempBaseDir()
         {
             if (shm == null)
                 shm = Directory.Exists("/dev/shm");
 
-            if (shm == true)
-                return $"/dev/shm/{CrypTo.md5(DateTime.Now.ToFileTimeUtc().ToString())}";
+            // Why (M-5): keep the existing /dev/shm fast-path on Linux, fall back to
+            // the platform temp dir (e.g. on Windows or containers without /dev/shm).
+            return shm == true ? "/dev/shm" : Path.GetTempPath();
+        }
 
-            return Path.GetTempFileName();
+        static string createIsolatedTempDir()
+        {
+            // Why (M-5): CSPRNG-derived name (128 bits) — not predictable like md5(FILETIME).
+            string rand = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+            string parent = Path.Combine(getTempBaseDir(), "lampac-imgproxy");
+            string workDir = Path.Combine(parent, rand);
+
+            // Ensure the shared parent exists; its mode doesn't need to be 0700 because
+            // the per-request child below is the one we lock down.
+            Directory.CreateDirectory(parent);
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                Directory.CreateDirectory(workDir);
+            }
+            else
+            {
+                // Why (M-5): 0700 on Unix so other local users can't traverse into the dir
+                // to read inputs/outputs or pre-create colliding paths.
+                Directory.CreateDirectory(workDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            return workDir;
+        }
+
+        static void TryRestrictToOwner(string path)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                return;
+
+            // Why (M-5): 0600 so only the lampac process user can read/write the temp file.
+            try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+            catch { }
         }
         #endregion
     }

@@ -23,9 +23,14 @@ namespace JacRed.Controllers
             if (!jackett.Megapeer.enable)
                 return Content("disable");
 
+            // Why (FM-15): `id` is attacker-controlled and path-interpolated into /download/{id}.
+            // Non-numeric values enable path traversal and pivoting. Mirror the Rutracker pattern.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             var proxyManager = new ProxyManager("megapeer", jackett.Megapeer);
 
-            byte[] _t = await Http.Download($"{jackett.Megapeer.host}/download/{id}", referer: jackett.Megapeer.host, proxy: proxyManager.Get());
+            byte[] _t = await Http.Download($"{jackett.Megapeer.host}/download/{tid}", referer: jackett.Megapeer.host, proxy: proxyManager.Get());
             if (_t != null && BencodeTo.Magnet(_t) != null)
                 return File(_t, "application/x-bittorrent");
 
@@ -39,6 +44,12 @@ namespace JacRed.Controllers
         {
             #region html
             var proxyManager = new ProxyManager("megapeer", jackett.Megapeer);
+
+            // Why (FM-13): `cat` is concatenated into the scraper URL and reaches parsePage via
+            // module config / callers. Treat non-numeric values as the neutral "0" so the URL
+            // cannot be pivoted or have extra query parameters injected.
+            if (!int.TryParse(cat, out _))
+                cat = "0";
 
             string html = await Http.Get($"{jackett.Megapeer.host}/browse.php?search={HttpUtility.UrlEncode(query, Encoding.GetEncoding(1251))}&cat={cat}", encoding: Encoding.GetEncoding(1251), proxy: proxyManager.Get(), timeoutSeconds: jackett.timeoutSeconds, headers: HeadersModel.Init(
                 ("dnt", "1"),

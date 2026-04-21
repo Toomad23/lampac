@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using Shared.Models.Online.PiTor;
 using Shared.Models.Online.Settings;
 using System.Data;
@@ -349,6 +350,12 @@ namespace Online.Controllers
             if (NoAccessGroup(init, out string error_msg))
                 return Json(new { accsdb = true, error_msg });
 
+            // Why: M-15 — the route parameter `id` is concatenated into a JSON POST body and into the
+            // magnet link below, so reject anything that is not a btih hash (32 base32 / 40 hex) before
+            // it can break JSON escaping or inject fields like save_to_db.
+            if (string.IsNullOrEmpty(id) || !Regex.IsMatch(id, "^[a-fA-F0-9]{40}$|^[a-zA-Z2-7]{32}$"))
+                return StatusCode(400);
+
             string tr = Regex.Replace(HttpContext.Request.QueryString.Value.Remove(0, 1), "&(account_email|uid|token|title|original_title|rjson|s)=[^&]+", "");
 
             string memKey = $"pidtor:serial:{id}";
@@ -401,7 +408,10 @@ namespace Online.Controllers
                     var ts = gots();
 
                     string magnet = $"magnet:?xt=urn:btih:{id}&" + tr;
-                    string hash = await Http.Post($"{ts.host}/torrents", "{\"action\":\"add\",\"link\":\"" + magnet + "\",\"title\":\"\",\"poster\":\"\",\"save_to_db\":false}", timeoutSeconds: 8, headers: ts.header);
+                    // Why: M-15 — build the torrserver JSON body through the serializer so arbitrary
+                    // characters in `magnet`/`hash` are escaped and cannot override fields like save_to_db.
+                    string addBody = JsonConvert.SerializeObject(new { action = "add", link = magnet, title = string.Empty, poster = string.Empty, save_to_db = false });
+                    string hash = await Http.Post($"{ts.host}/torrents", addBody, timeoutSeconds: 8, headers: ts.header);
                     if (hash == null)
                         return StatusCode(503);
 
@@ -412,13 +422,15 @@ namespace Online.Controllers
                     Stat stat = null;
                     var ex = DateTime.Now.AddSeconds(20);
 
-                    resetgotingo: 
-                    stat = await Http.Post<Stat>($"{ts.host}/torrents", "{\"action\":\"get\",\"hash\":\"" + hash + "\"}", timeoutSeconds: 3, headers: ts.header);
+                    resetgotingo:
+                    string getBody = JsonConvert.SerializeObject(new { action = "get", hash });
+                    stat = await Http.Post<Stat>($"{ts.host}/torrents", getBody, timeoutSeconds: 3, headers: ts.header);
                     if (stat?.file_stats == null || stat.file_stats.Length == 0)
                     {
                         if (DateTime.Now > ex)
                         {
-                            _ = Http.Post($"{ts.host}/torrents", "{\"action\":\"rem\",\"hash\":\"" + hash + "\"}", headers: ts.header);
+                            string remBody = JsonConvert.SerializeObject(new { action = "rem", hash });
+                            _ = Http.Post($"{ts.host}/torrents", remBody, headers: ts.header);
                             return StatusCode(503);
                         }
 
@@ -426,7 +438,8 @@ namespace Online.Controllers
                         goto resetgotingo;
                     }
 
-                    _ = Http.Post($"{ts.host}/torrents", "{\"action\":\"rem\",\"hash\":\"" + hash + "\"}", headers: ts.header);
+                    string remDoneBody = JsonConvert.SerializeObject(new { action = "rem", hash });
+                    _ = Http.Post($"{ts.host}/torrents", remDoneBody, headers: ts.header);
 
                     file_stats = stat.file_stats;
                     hybridCache.Set(memKey, file_stats, DateTime.Now.AddHours(36));
@@ -459,6 +472,11 @@ namespace Online.Controllers
             if (NoAccessGroup(init, out string error_msg))
                 return Json(new { accsdb = true, error_msg });
 
+            // Why: M-15 — same btih-only validation as Serial above, since `id` again flows into both
+            // a magnet link and the torrserver JSON body built inside auth_stream.
+            if (string.IsNullOrEmpty(id) || !Regex.IsMatch(id, "^[a-fA-F0-9]{40}$|^[a-zA-Z2-7]{32}$"))
+                return StatusCode(400);
+
             string country = requestInfo.Country;
 
             int index = tsid != -1 ? tsid : 1;
@@ -475,7 +493,10 @@ namespace Online.Controllers
                     var headers = HeadersModel.Init("Authorization", $"Basic {CrypTo.Base64($"{login}:{passwd}")}");
                         headers = HeadersModel.Join(headers, addheaders);
 
-                    hash = await Http.Post($"{host}/torrents", "{\"action\":\"add\",\"link\":\"" + magnet + "\",\"title\":\"\",\"poster\":\"\",\"save_to_db\":false}", timeoutSeconds: 5, headers: headers);
+                    // Why: M-15 — serialize rather than concatenate so the magnet (which still contains
+                    // user-controlled trackers from the query string) cannot escape the JSON string.
+                    string addBody = JsonConvert.SerializeObject(new { action = "add", link = magnet, title = string.Empty, poster = string.Empty, save_to_db = false });
+                    hash = await Http.Post($"{host}/torrents", addBody, timeoutSeconds: 5, headers: headers);
                     if (hash == null)
                         return StatusCode(503, $"{host} unavailable");
 

@@ -188,6 +188,12 @@ namespace Online.Controllers
             if (hash != CrypTo.md5($"{init.clientId}:{content_type}:{content_id}:{playlist}:{requestInfo.IP}"))
                 return OnError("hash", gbcache: false);
 
+            // playlist is concatenated into an upstream URL; reject authority-
+            // rewriting inputs ("@attacker.tld/..") and inputs that don't look
+            // like a VideoCDN path.
+            if (string.IsNullOrEmpty(playlist) || playlist[0] != '/' || playlist.Contains('@'))
+                return OnError("playlist", gbcache: false);
+
             if (rch != null)
             {
                 if (rch.IsNotConnected())
@@ -210,13 +216,17 @@ namespace Online.Controllers
             {
                 if (init.log)
                 {
+                    // Why: H-15 — do not spill the full VideoCDN accessToken (billing-capable API credential) to log files.
+                    // Replace raw token with a short md5 fingerprint so log entries can still be correlated without leaking the token.
+                    string accessTokenFp = string.IsNullOrEmpty(accessToken) ? string.Empty : CrypTo.md5(accessToken).Substring(0, 6);
+
                     string data = System.Text.Json.JsonSerializer.Serialize(new
                     {
                         time = DateTime.Now,
                         requestInfo.Country,
                         requestInfo.IP,
                         requestInfo.UserAgent,
-                        video = new { content_id, content_type, playlist, accessToken }
+                        video = new { content_id, content_type, playlist, accessTokenFp }
                     });
 
                     string patchlog = $"cache/logs/VideoCDN/{DateTime.Today:dd-MM}.txt";

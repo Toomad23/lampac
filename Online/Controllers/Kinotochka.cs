@@ -9,6 +9,43 @@ namespace Online.Controllers
     {
         public Kinotochka() : base(AppInit.conf.Kinotochka) { }
 
+        // Why (FH-10): playlist(newsuri) fetches the caller-supplied URL AND forwards
+        // init.cookie on the outbound request. Without a host gate that is both an SSRF
+        // primitive and a cookie-exfil primitive (attacker points newsuri at their own
+        // host and receives Lampac's Kinotochka cookie). Pin the host to init.host /
+        // init.apihost; require http(s).
+        bool IsAllowedUri(string uri)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return false;
+
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = parsed.Host;
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            foreach (string configured in new[] { init?.host, init?.apihost })
+            {
+                if (string.IsNullOrEmpty(configured))
+                    continue;
+
+                if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                    continue;
+
+                string allowedHost = configuredUri.Host;
+                if (host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
         [HttpGet]
         [Route("lite/kinotochka")]
         async public Task<ActionResult> Index(long kinopoisk_id, string title, string original_title, int serial, string newsuri, int s = -1)
@@ -105,6 +142,17 @@ namespace Online.Controllers
                 }
                 else
                 {
+                    // Why (FH-10): newsuri is user-supplied AND the request forwards init.cookie.
+                    // Enforce the host allow-list before the fetch so we neither SSRF into private
+                    // networks nor leak the cookie to an attacker-controlled domain.
+                    if (!IsAllowedUri(newsuri))
+                        return OnError();
+
+                    // Why (FH-10): filetxt is parsed out of the upstream HTML, so its host is not
+                    // guaranteed to match init.host. Only forward the cookie when filetxt sits on
+                    // the same allow-listed host family.
+                    bool allowCookieOnFiletxt(string filetxt) => IsAllowedUri(filetxt);
+
                     #region Серии
                     rhubFallback:
 
@@ -112,7 +160,7 @@ namespace Online.Controllers
                     {
                         string filetxt = null;
 
-                        await httpHydra.GetSpan(newsuri, addheaders: HeadersModel.Init("cookie", cookie), safety: !string.IsNullOrEmpty(cookie), spanAction: news => 
+                        await httpHydra.GetSpan(newsuri, addheaders: HeadersModel.Init("cookie", cookie), safety: !string.IsNullOrEmpty(cookie), spanAction: news =>
                         {
                             filetxt = Rx.Match(news, "file:\"(https?://[^\"]+\\.txt)\"");
                         });
@@ -120,7 +168,9 @@ namespace Online.Controllers
                         if (string.IsNullOrEmpty(filetxt))
                             return e.Fail("filetxt", refresh_proxy: true);
 
-                        var root = await httpHydra.Get<JObject>(filetxt, addheaders: HeadersModel.Init("cookie", cookie), safety: !string.IsNullOrEmpty(cookie));
+                        bool sendCookieOnFiletxt = !string.IsNullOrEmpty(cookie) && allowCookieOnFiletxt(filetxt);
+                        var filetxtHeaders = sendCookieOnFiletxt ? HeadersModel.Init("cookie", cookie) : null;
+                        var root = await httpHydra.Get<JObject>(filetxt, addheaders: filetxtHeaders, safety: sendCookieOnFiletxt);
 
                         if (root == null)
                             return e.Fail("root", refresh_proxy: true);

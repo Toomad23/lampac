@@ -34,6 +34,12 @@ namespace Online.Controllers
             if (await IsRequestBlocked(rch: true))
                 return badInitMsg;
 
+            // Why (FM-11): orid is concatenated into "{corsHost}/content/{orid}/iframe".
+            // Without a character-class check a caller can inject "..", "?" or "/" and
+            // point the server-side request elsewhere. Restrict to the PR #12 M-13 set.
+            if (!string.IsNullOrEmpty(orid) && !Regex.IsMatch(orid, "^[A-Za-z0-9_\\-]+$"))
+                return OnError();
+
             var oninvk = new VDBmoviesInvoke
             (
                host,
@@ -106,8 +112,11 @@ namespace Online.Controllers
             }
             #endregion
 
-            rhubFallback: 
-            var cache = await InvokeCacheResult<EmbedModel>(ipkey($"vdbmovies:{orid}:{kinopoisk_id}"), 20, async e =>
+            rhubFallback:
+            // Why (FM-9): orid is user-supplied; cap the cache-key segment to an md5
+            // fingerprint when oversized so an attacker cannot inflate the key space.
+            string oridKey = !string.IsNullOrEmpty(orid) && orid.Length > 256 ? CrypTo.md5(orid) : orid;
+            var cache = await InvokeCacheResult<EmbedModel>(ipkey($"vdbmovies:{oridKey}:{kinopoisk_id}"), 20, async e =>
             {
                 string uri = $"{init.corsHost()}/kinopoisk/{kinopoisk_id}/iframe";
                 if (!string.IsNullOrEmpty(orid))

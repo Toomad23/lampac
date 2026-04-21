@@ -16,59 +16,51 @@ namespace SISI.Controllers.Eporner
             pg += 1;
 
             string semaphoreKey = $"epr:{search}:{sort}:{c}:{pg}";
-            var semaphore = new SemaphorManager(semaphoreKey, TimeSpan.FromSeconds(30));
+            using var semaphore = new SemaphorManager(semaphoreKey, TimeSpan.FromSeconds(30));
 
             List<PlaylistItem> playlists = null;
             HybridCacheEntry<List<PlaylistItem>> entryCache;
 
-            try
+            reset: // http запросы последовательно
+            if (rch?.enable != true)
+                await semaphore.WaitAsync();
+
+            entryCache = hybridCache.Entry<List<PlaylistItem>>(semaphoreKey);
+
+            // fallback cache
+            if (!entryCache.success)
             {
+                string memKey = headerKeys(semaphoreKey, "accept");
 
-                reset: // http запросы последовательно 
-                if (rch?.enable != true)
-                    await semaphore.WaitAsync();
-
-                entryCache = hybridCache.Entry<List<PlaylistItem>>(semaphoreKey);
-
-                // fallback cache
-                if (!entryCache.success)
+                bool next = rch == null;
+                if (!next)
                 {
-                    string memKey = headerKeys(semaphoreKey, "accept");
-
-                    bool next = rch == null;
-                    if (!next)
-                    {
-                        // user cache разделенный по ip
-                        entryCache = hybridCache.Entry<List<PlaylistItem>>(memKey);
-                        next = !entryCache.success;
-                    }
-
-                    if (next)
-                    {
-                        string url = EpornerTo.Uri(init.corsHost(), search, sort, c, pg);
-
-                        await httpHydra.GetSpan(url, span => 
-                        {
-                            playlists = EpornerTo.Playlist("epr/vidosik", span);
-                        });
-
-                        if (playlists == null || playlists.Count == 0)
-                        {
-                            if (IsRhubFallback())
-                                goto reset;
-
-                            return OnError("playlists", refresh_proxy: string.IsNullOrEmpty(search));
-                        }
-
-                        proxyManager?.Success();
-
-                        hybridCache.Set(memKey, playlists, cacheTime(10));
-                    }
+                    // user cache разделенный по ip
+                    entryCache = hybridCache.Entry<List<PlaylistItem>>(memKey);
+                    next = !entryCache.success;
                 }
-            }
-            finally
-            {
-                semaphore.Release();
+
+                if (next)
+                {
+                    string url = EpornerTo.Uri(init.corsHost(), search, sort, c, pg);
+
+                    await httpHydra.GetSpan(url, span =>
+                    {
+                        playlists = EpornerTo.Playlist("epr/vidosik", span);
+                    });
+
+                    if (playlists == null || playlists.Count == 0)
+                    {
+                        if (IsRhubFallback())
+                            goto reset;
+
+                        return OnError("playlists", refresh_proxy: string.IsNullOrEmpty(search));
+                    }
+
+                    proxyManager?.Success();
+
+                    hybridCache.Set(memKey, playlists, cacheTime(10));
+                }
             }
 
             if (playlists == null)

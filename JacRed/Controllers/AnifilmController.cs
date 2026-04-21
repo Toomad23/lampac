@@ -22,6 +22,13 @@ namespace JacRed.Controllers
             if (!jackett.Anifilm.enable)
                 return Content("disable");
 
+            // Why (FM-15): `url` is attacker-controlled and path-interpolated against the
+            // Anifilm host. The scraper only ever emits `releases/...` slugs, so reject anything
+            // else (path traversal, query/fragment injection, scheme smuggling). Mirror the
+            // Rutracker "validate-then-use" pattern with a format-appropriate constraint.
+            if (string.IsNullOrWhiteSpace(url) || !Regex.IsMatch(url, "^releases/[A-Za-z0-9_\\-/]+$"))
+                return Content("invalid url");
+
             var proxyManager = new ProxyManager("anifilm", jackett.Anifilm);
 
             var fullNews = await Http.Get($"{jackett.Anifilm.host}/{url}", proxy: proxyManager.Get());

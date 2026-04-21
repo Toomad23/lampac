@@ -14,6 +14,7 @@ using Shared.Models.Online.Settings;
 using Shared.Models.ServerProxy;
 using Shared.Models.SISI.Base;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text.RegularExpressions;
 using System.Threading;
 using YamlDotNet.Serialization;
@@ -171,6 +172,8 @@ namespace Shared
 
             PosterApi.Initialization(conf.omdbapi_key, conf.posterApi, new ProxyLink());
 
+            AccsToken.Init(conf.accsdb.hmac_secret);
+
             #region accounts
             if (conf.accsdb.accounts != null)
             {
@@ -199,7 +202,7 @@ namespace Shared
                 long utc = DateTime.UtcNow.ToFileTimeUtc();
                 foreach (string line in File.ReadAllLines("merchant/users.txt"))
                 {
-                    if (string.IsNullOrWhiteSpace(line) && !line.Contains("@"))
+                    if (string.IsNullOrWhiteSpace(line) || !line.Contains("@"))
                         continue;
 
                     var data = line.Split(',');
@@ -282,6 +285,8 @@ namespace Shared
             {
                 Console.WriteLine($"DeserializeObject Exception init.yaml:\n{ex}\n\n");
             }
+
+            AccsToken.Init(conf.accsdb.hmac_secret);
         }
         #endregion
 
@@ -289,13 +294,27 @@ namespace Shared
         public static string Host(HttpContext httpContext)
         {
             string scheme = string.IsNullOrEmpty(conf.listen.scheme) ? httpContext.Request.Scheme : conf.listen.scheme;
-            if (httpContext.Request.Headers.TryGetValue("xscheme", out var xscheme) && !string.IsNullOrEmpty(xscheme))
+
+            // xscheme / xhost are Lampac-internal headers: OnlineApi sets them on
+            // loopback-only "localrequest" calls (see OnlineApi.cs). Honouring them
+            // from external clients lets anyone inject an arbitrary Host into the
+            // {host}/proxy/... URLs we embed in responses, which then get cached
+            // and served to other users. Gate on a loopback peer.
+            //
+            // Why (FC-1): must use IsStrictLoopback — IsLocalIp also returns
+            // true for RFC1918/ULA (10/8, 172.16/12, 192.168/16, fc00::/7), so
+            // any LAN peer could spoof xhost and poison the cache. Only the
+            // host itself (127/8 or ::1) may dictate the public URL.
+            string remoteIp = httpContext.Connection.RemoteIpAddress?.ToString();
+            bool trustedPeer = Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp);
+
+            if (trustedPeer && httpContext.Request.Headers.TryGetValue("xscheme", out var xscheme) && !string.IsNullOrEmpty(xscheme))
                 scheme = xscheme;
 
             if (!string.IsNullOrEmpty(conf.listen.host))
                 return $"{scheme}://{conf.listen.host}";
 
-            if (httpContext.Request.Headers.TryGetValue("xhost", out var xhost))
+            if (trustedPeer && httpContext.Request.Headers.TryGetValue("xhost", out var xhost))
                 return $"{scheme}://{Regex.Replace(xhost, "^https?://", "")}";
 
             return $"{scheme}://{httpContext.Request.Host.Value}";
@@ -328,17 +347,41 @@ namespace Shared
                     if (!mod.enable || mod.dll == "Jackett.dll")
                         continue;
 
-                    string path = File.Exists(mod.dll) ? mod.dll : $"{Environment.CurrentDirectory}/module/{mod.dll}";
-                    if (File.Exists(path))
+                    // Why (FH-1): mod.dll comes from a user-editable manifest. Reject
+                    // rooted paths / ".." / separators and resolve the final full path
+                    // to stay strictly under module/. Previously Assembly.LoadFile
+                    // accepted any absolute path (/etc/evil.dll) verbatim.
+                    if (!ModulePaths.TryResolveModuleDll(mod.dll, out string path, out string reason))
                     {
-                        try
-                        {
-                            mod.assembly = Assembly.LoadFile(path);
-                            mod.index = mod.index != 0 ? mod.index : (100 + modules.Count);
-                            modules.Add(mod);
-                        }
-                        catch (Exception ex) { Console.WriteLine($"LoadModules {path}: {ex.Message}"); }
+                        Console.WriteLine($"LoadModules: rejected mod.dll '{mod.dll}' ({reason})");
+                        continue;
                     }
+
+                    if (!File.Exists(path))
+                        continue;
+
+                    // Why (FH-4): optional sha256 integrity pin. Missing hash logs a
+                    // warning and continues (non-breaking for existing manifests).
+                    if (!ModulePaths.VerifyDllIntegrity(path, mod.sha256, mod.dll))
+                        continue;
+
+                    try
+                    {
+                        // Why (FH-3): the top-level module/manifest.json lists
+                        // mostly first-party shipped DLLs (DLNA.dll, SISI.dll,
+                        // Tracks.dll, TorrServer.dll) that plug into the shared
+                        // EF Core DbContext types and ASP.NET DI. Unloading them
+                        // at runtime would dangle cross-assembly service
+                        // registrations, so they stay in AssemblyLoadContext.Default
+                        // per spec ("Keep default context for first-party shipped
+                        // DLLs"). Dynamic .cs-compiled modules pick up collectible
+                        // ALCs in Lampac/Startup.cs CompilationMod.
+                        mod.loadHandle = ModuleLoadHandle.ForDefault();
+                        mod.assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
+                        mod.index = mod.index != 0 ? mod.index : (100 + modules.Count);
+                        modules.Add(mod);
+                    }
+                    catch (Exception ex) { Console.WriteLine($"LoadModules {path}: {ex.Message}"); }
                 }
             }
         }
@@ -514,6 +557,8 @@ namespace Shared
         };
 
         public FfprobeSettings ffprobe = new FfprobeSettings() { enable = true };
+
+        public CorsConf cors { get; set; } = new CorsConf();
 
         public TranscodingConf transcoding { get; set; } = new TranscodingConf()
         {

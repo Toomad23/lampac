@@ -24,7 +24,7 @@ namespace Online.Controllers
 
             if (string.IsNullOrEmpty(href) && !string.IsNullOrEmpty(source) && !string.IsNullOrEmpty(id))
             {
-                if (source.ToLower() == "kinoukr")
+                if (source.ToLower() == "kinoukr" && System.Text.RegularExpressions.Regex.IsMatch(id, @"^[A-Za-z0-9_\-]+$"))
                     href = await InvokeCache($"kinoukr:source:{id}", 180, () => oninvk.getIframeSource($"{init.host}/{id}"));
             }
 

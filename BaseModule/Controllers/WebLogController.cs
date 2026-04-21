@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shared;
+using System.Web;
 
 namespace Lampac.Controllers
 {
@@ -16,6 +17,12 @@ namespace Lampac.Controllers
 
             if (!string.IsNullOrEmpty(AppInit.conf.weblog.token) && token != AppInit.conf.weblog.token)
                 return Content("Используйте /weblog?token=my_key\n\n\"weblog\": {\n   \"enable\": true,\n   \"token\": \"my_key\"\n}", contentType: "text/plain; charset=utf-8");
+
+            // pattern / receive are reflected into HTML attributes below; encode
+            // them before interpolation to prevent reflected XSS when weblog.token
+            // is unset (anyone can hit this endpoint).
+            string safePattern = HttpUtility.HtmlAttributeEncode(pattern ?? "");
+            string safeReceive = receive == "request" ? "request" : "http";
 
             string html = $@"<!DOCTYPE html>
 <html>
@@ -42,12 +49,12 @@ namespace Lampac.Controllers
     <div id='controls' style='margin-bottom: 1em; background: #f0f0f0; padding: 10px; border-bottom: 1px solid #ccc;'>
         <label style='margin-right: 20px;'>Запросы:
             <select id='receiveSelect' style='padding: 0px 5px 0px 0px;'>
-                <option value='http' {(receive == "http" ? "selected" : "")}>Исходящие</option>
-                <option value='request' {(receive == "request" ? "selected" : "")}>Входящие</option>
+                <option value='http' {(safeReceive == "http" ? "selected" : "")}>Исходящие</option>
+                <option value='request' {(safeReceive == "request" ? "selected" : "")}>Входящие</option>
             </select>
         </label>
         <label for='patternInput'>Фильтр: </label>
-        <input type='text' id='patternInput' placeholder='rezka.ag' value='{pattern ?? ""}' style='margin-right: 20px;' />
+        <input type='text' id='patternInput' placeholder='rezka.ag' value='{safePattern}' style='margin-right: 20px;' />
     </div>
     <div id='log'></div>
     <script src='/js/nws-client-es5.js'></script>

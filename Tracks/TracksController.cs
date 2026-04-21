@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Shared;
 using Shared.Engine;
 using System;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -49,7 +50,27 @@ namespace Tracks.Controllers
             if (media.Contains("/dlna/stream"))
             {
                 string path = Regex.Match(media, "\\?path=([^&]+)").Groups[1].Value;
-                if (!System.IO.File.Exists("dlna/" + HttpUtility.UrlDecode(path)))
+
+                // Why: M-21 — without canonicalisation "?path=..%2F..%2Fetc%2Fpasswd" probes
+                // arbitrary filesystem locations via the "path" vs "{}" response, giving the
+                // caller a filesystem-enumeration oracle. Canonicalise both the base dir and
+                // the resolved candidate and require the candidate to live under the base.
+                bool insideDlna = false;
+                try
+                {
+                    string decoded = HttpUtility.UrlDecode(path) ?? string.Empty;
+                    string dlnaRoot = System.IO.Path.GetFullPath("dlna") + System.IO.Path.DirectorySeparatorChar;
+                    string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine("dlna", decoded));
+
+                    insideDlna = candidate.StartsWith(dlnaRoot, StringComparison.Ordinal) &&
+                                 System.IO.File.Exists(candidate);
+                }
+                catch
+                {
+                    insideDlna = false;
+                }
+
+                if (!insideDlna)
                     return showerror ? "path" : "{}";
 
                 magnethash = path;
@@ -109,6 +130,19 @@ namespace Tracks.Controllers
                     if (!Uri.TryCreate(media, UriKind.Absolute, out var uri) ||
                         (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                         return showerror ? "uri" : "{}";
+
+                    // SSRF guard: without a host allow-list /ffprobe would happily
+                    // hand an arbitrary http(s) URL (including 169.254.169.254,
+                    // intranet admin UIs, etc.) to the ffprobe subprocess.
+                    // Reject private/loopback/link-local unconditionally, and if
+                    // ffprobe.allowHosts is configured, require the host to match.
+                    if (!Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(uri.AbsoluteUri))
+                        return showerror ? "uri" : "{}";
+
+                    var ffconf = AppInit.conf.ffprobe;
+                    if (ffconf.allowHosts != null && ffconf.allowHosts.Length > 0 &&
+                        !ffconf.allowHosts.Contains(uri.Host, System.StringComparer.OrdinalIgnoreCase))
+                        return showerror ? "host" : "{}";
 
                     var process = new System.Diagnostics.Process();
                     process.StartInfo.UseShellExecute = false;

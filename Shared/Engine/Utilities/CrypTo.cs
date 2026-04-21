@@ -77,9 +77,12 @@ namespace Shared.Engine
         #region md5 - string
         public static string md5(ReadOnlySpan<char> text)
         {
-            if (text.IsEmpty)
-                return string.Empty;
-
+            // Why: callers treat the output as a 32-char hex string and do things
+            // like `.Substring(0, 6)` for cache-key fingerprints (Filmix, Kodik,
+            // KinoPub, VoKino).  Returning string.Empty for empty input made those
+            // sites crash with ArgumentOutOfRangeException.  MD5 of an empty input
+            // is a well-defined standard value (d41d8cd98f00b204e9800998ecf8427e);
+            // computing it is cheap and removes the empty-string foot-gun.
             int byteCount = Encoding.UTF8.GetByteCount(text);
             if (byteCount < 512)
                 return md5Stack(text, byteCount);
@@ -268,6 +271,21 @@ namespace Shared.Engine
                 return Convert.ToBase64String(cipherBytes, 0, cipherBytes.Length);
             }
         }
+
+        #region FixedTimeEquals
+        // Constant-time string comparison for secrets. Returns false on null, on length mismatch,
+        // or on any byte difference — without short-circuiting, so comparison time does not leak
+        // a partial match through timing. Use for passwords, HMAC/MD5 hex signatures, tokens.
+        public static bool FixedTimeEquals(string a, string b)
+        {
+            if (a == null || b == null)
+                return false;
+
+            byte[] ba = Encoding.UTF8.GetBytes(a);
+            byte[] bb = Encoding.UTF8.GetBytes(b);
+            return CryptographicOperations.FixedTimeEquals(ba, bb);
+        }
+        #endregion
 
         #region unic
         static string ArrayList => "qwertyuioplkjhgfdsazxcvbnmQWERTYUIOPLKJHGFDSAZXCVBNM1234567890";

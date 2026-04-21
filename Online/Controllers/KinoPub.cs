@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
+using Shared.Engine;
 using Shared.Models.Online.Settings;
 
 namespace Online.Controllers
@@ -27,9 +28,16 @@ namespace Online.Controllers
         {
             var headers = httpHeaders(init);
 
+            // Why: allow operators to override the compiled-in client_secret via init.conf (L-8).
+            // Fallback is the well-known shared XBMC client_secret — it WILL be revoked by KinoPub if leaked,
+            // so production deployments should set KinoPub.client_secret explicitly.
+            string client_secret = !string.IsNullOrWhiteSpace(init.client_secret)
+                ? init.client_secret
+                : "cgg3gtifu46urtfp2zp1nqtba0k2ezxh";
+
             if (string.IsNullOrWhiteSpace(code))
             {
-                string uri = $"{init.corsHost()}/oauth2/device?grant_type=device_code&client_id=xbmc&client_secret=cgg3gtifu46urtfp2zp1nqtba0k2ezxh";
+                string uri = $"{init.corsHost()}/oauth2/device?grant_type=device_code&client_id=xbmc&client_secret={client_secret}";
                 var token_request = await Http.Post<JObject>(uri, "", httpversion: init.GetHttpVersion(), proxy: proxy, headers: httpHeaders(init));
 
                 if (token_request == null)
@@ -45,7 +53,7 @@ namespace Online.Controllers
             }
             else
             {
-                string uri = $"{init.corsHost()}/oauth2/device?grant_type=device_token&client_id=xbmc&client_secret=cgg3gtifu46urtfp2zp1nqtba0k2ezxh&code={code}";
+                string uri = $"{init.corsHost()}/oauth2/device?grant_type=device_token&client_id=xbmc&client_secret={client_secret}&code={code}";
                 var device_token = await Http.Post<JObject>(uri, "", httpversion: init.GetHttpVersion(), proxy: proxy, headers: httpHeaders(init));
                 if (device_token == null || string.IsNullOrWhiteSpace(device_token.Value<string>("access_token")))
                     return LocalRedirect("/lite/kinopubpro");
@@ -112,7 +120,9 @@ namespace Online.Controllers
             }
 
             rhubFallback:
-            var cache = await InvokeCacheResult($"kinopub:post:{postid}:{token}", 10,
+            // Why: fingerprint user token instead of embedding it raw in the cache key (H-14)
+            string tokenFp = CrypTo.md5(token ?? string.Empty).Substring(0, 6);
+            var cache = await InvokeCacheResult($"kinopub:post:{postid}:{tokenFp}", 10,
                 () => oninvk.Post(postid)
             );
 
@@ -139,7 +149,9 @@ namespace Online.Controllers
 
             string uri = $"{init.corsHost()}/v1/items/media-links?mid={mid}&access_token={token}";
 
-            var root = await InvokeCache($"kinopub:media-links:{mid}:{token}", 20, 
+            // Why: fingerprint user token instead of embedding it raw in the cache key (H-14)
+            string tokenFp = CrypTo.md5(token ?? string.Empty).Substring(0, 6);
+            var root = await InvokeCache($"kinopub:media-links:{mid}:{tokenFp}", 20,
                 () => httpHydra.Get<JObject>(uri, safety: true)
             );
 

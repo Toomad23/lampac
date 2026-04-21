@@ -10,11 +10,38 @@ namespace JacRed.Engine
         static JacConf jackett => ModInit.conf.Jackett;
 
         #region Indexers
+        // Why (FM-14): mirror the ApiController cap. `query`, `title`, `title_original` are
+        // attacker-controlled; an unbounded concatenation into `mkey` allows cache blow-up
+        // (one entry per unique adversarial input) and DoS against the cache backend.
+        const int MaxQueryLength = 300;
+
+        static string capQueryPart(string value)
+        {
+            if (value == null)
+                return null;
+
+            return value.Length > MaxQueryLength ? value.Substring(0, MaxQueryLength) : value;
+        }
+
         async public static Task<List<TorrentDetails>> Indexers(string host, string query, string title, string title_original, int year, int is_serial, Dictionary<string, string> category)
         {
             var hybridCache = IHybridCache.Get(null);
 
-            string mkey = $"JackettApi:{query}:{title}:{title_original}:{year}:{is_serial}:{category?.FirstOrDefault().Value}";
+            // Why (FM-14): cap each attacker-controlled component, and md5-fingerprint the
+            // composite when it still exceeds 256 chars so the cache key stays bounded.
+            string qKey = capQueryPart(query);
+            string tKey = capQueryPart(title);
+            string toKey = capQueryPart(title_original);
+            string catKey = capQueryPart(category?.FirstOrDefault().Value);
+
+            string mkey = $"JackettApi:{qKey}:{tKey}:{toKey}:{year}:{is_serial}:{catKey}";
+            if (mkey.Length > 256)
+            {
+                using var md5 = System.Security.Cryptography.MD5.Create();
+                byte[] keyHash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(mkey));
+                mkey = "JackettApi:md5:" + Convert.ToHexString(keyHash);
+            }
+
             if (hybridCache.TryGetValue(mkey, out List<TorrentDetails> cache, inmemory: false))
                 return cache;
 

@@ -8,9 +8,11 @@ using Shared.Models.Base;
 using Shared.Models.Events;
 using Shared.Models.Proxy;
 using Shared.Models.Templates;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -27,10 +29,17 @@ namespace Shared
 
             var eventsDir = Path.Combine(AppContext.BaseDirectory, "events");
             var lastWriteTimes = new Dictionary<string, DateTime>();
+            var lastCsWriteTimes = new Dictionary<string, DateTime>();
 
             // Инициализация дат
             foreach (var file in Directory.Exists(eventsDir) ? Directory.GetFiles(eventsDir, "*.yaml") : Array.Empty<string>())
                 lastWriteTimes[file] = File.GetLastWriteTimeUtc(file);
+
+            // Why (FL-6): also track .cs files so when an operator edits an event script the
+            // compiled-delegate cache in CSharpEval is purged immediately (otherwise the stale
+            // compiled code runs until the 10-minute TTL or cache bound evicts it).
+            foreach (var file in Directory.Exists(eventsDir) ? Directory.GetFiles(eventsDir, "*.cs") : Array.Empty<string>())
+                lastCsWriteTimes[file] = File.GetLastWriteTimeUtc(file);
 
             ThreadPool.QueueUserWorkItem(async _ =>
             {
@@ -42,7 +51,9 @@ namespace Shared
                         continue;
 
                     bool changed = false;
+                    bool csChanged = false;
                     var files = Directory.GetFiles(eventsDir, "*.yaml");
+                    var csFiles = Directory.GetFiles(eventsDir, "*.cs");
 
                     // Проверка новых и изменённых файлов
                     foreach (var file in files)
@@ -65,8 +76,31 @@ namespace Shared
                         }
                     }
 
+                    // Why (FL-6): detect .cs edits so the compiled-delegate cache is flushed.
+                    foreach (var file in csFiles)
+                    {
+                        var writeTime = File.GetLastWriteTimeUtc(file);
+                        if (!lastCsWriteTimes.TryGetValue(file, out var lastTime) || writeTime != lastTime)
+                        {
+                            csChanged = true;
+                            lastCsWriteTimes[file] = writeTime;
+                        }
+                    }
+
+                    foreach (var file in lastCsWriteTimes.Keys.ToList())
+                    {
+                        if (!csFiles.Contains(file))
+                        {
+                            csChanged = true;
+                            lastCsWriteTimes.Remove(file);
+                        }
+                    }
+
                     if (changed)
                         updateConf();
+
+                    if (changed || csChanged)
+                        CSharpEval.InvalidateAll();
                 }
             });
         }
@@ -129,65 +163,141 @@ namespace Shared
         #region FileOrCode
         static string FileOrCode(string _val)
         {
-            if (_val.EndsWith(".cs"))
-                return FileCache.ReadAllText(Path.Combine("events", _val));
+            if (!_val.EndsWith(".cs"))
+                return _val;
 
-            return _val;
+            // Why (FL-5): _val is a YAML-supplied value. Previously we combined it with
+            // "events/" and handed it to FileCache. If an operator (or anyone who can edit
+            // the YAML) wrote `../foo.cs` or `..\..\etc\passwd.cs`, the combined path would
+            // escape the events/ directory. Reject separators and relative traversals, then
+            // confirm the resolved absolute path still lives under events/.
+            if (_val.IndexOfAny(new[] { '/', '\\' }) >= 0 || _val.Contains(".."))
+            {
+                Console.Error.WriteLine($"InvkEvent FileOrCode: rejected path-like value '{_val}'");
+                return string.Empty;
+            }
+
+            var eventsDir = Path.Combine(AppContext.BaseDirectory, "events");
+            string combined = Path.Combine(eventsDir, Path.GetFileName(_val));
+
+            string fullEvents;
+            string fullCombined;
+            try
+            {
+                fullEvents = Path.GetFullPath(eventsDir);
+                fullCombined = Path.GetFullPath(combined);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+
+            if (!fullCombined.StartsWith(fullEvents + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(fullCombined, fullEvents, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine($"InvkEvent FileOrCode: path escapes events dir '{_val}'");
+                return string.Empty;
+            }
+
+            // Why (FL-4): FileCache.ReadAllText silently prefers a sibling `.my.cs` shadow file
+            // (intended for config overrides), which means an attacker or misconfigured operator
+            // could hide a second code path behind every event handler without the reviewer
+            // seeing it. For executable code we read the canonical file directly and skip the
+            // override machinery. Config files keep the .my override behavior — only scripts
+            // are tightened here.
+            if (!File.Exists(fullCombined))
+                return string.Empty;
+
+            try
+            {
+                return File.ReadAllText(fullCombined);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+        #endregion
+
+
+        #region exception logging
+        // Why (FL-7): previously the Invoke helpers swallowed every exception with `catch { }`.
+        // Operators had no visibility into scripts that silently failed. We now rate-limit the
+        // log line to one message per minute per (handler, exception-type) pair — enough to
+        // surface repeated failures without spamming stderr. The exception detail is NOT
+        // returned to HTTP responses; we only write to stderr.
+        static readonly ConcurrentDictionary<string, long> _lastLogTicks = new();
+        static readonly TimeSpan _logInterval = TimeSpan.FromMinutes(1);
+
+        static void LogInvokeException(Exception ex, [CallerMemberName] string handler = null)
+        {
+            if (ex == null)
+                return;
+
+            string key = (handler ?? "?") + "|" + ex.GetType().Name;
+            long now = DateTime.UtcNow.Ticks;
+            long last = _lastLogTicks.GetOrAdd(key, 0);
+
+            if (now - last < _logInterval.Ticks)
+                return;
+
+            if (!_lastLogTicks.TryUpdate(key, now, last))
+                return; // another thread logged this same handler/type in the meantime
+
+            Console.Error.WriteLine($"InvkEvent {handler} failed: {ex.GetType().Name}: {ex.Message}");
         }
         #endregion
 
 
         #region Invoke<T>
-        static T Invoke<T>(string cs, object model, ScriptOptions options = null)
+        static T Invoke<T>(string cs, object model, ScriptOptions options = null, [CallerMemberName] string handler = null)
         {
             try
             {
                 if (cs != null)
                     return CSharpEval.Execute<T>(FileOrCode(cs), model, options);
             }
-            catch { }
+            catch (Exception ex) { LogInvokeException(ex, handler); }
 
             return default;
         }
         #endregion
 
         #region InvokeAsync<T>
-        static Task<T> InvokeAsync<T>(string cs, object model, ScriptOptions options = null)
+        static async Task<T> InvokeAsync<T>(string cs, object model, ScriptOptions options = null, [CallerMemberName] string handler = null)
         {
             try
             {
                 if (cs != null)
-                    return CSharpEval.ExecuteAsync<T>(FileOrCode(cs), model, options);
+                    return await CSharpEval.ExecuteAsync<T>(FileOrCode(cs), model, options).ConfigureAwait(false);
             }
-            catch { }
+            catch (Exception ex) { LogInvokeException(ex, handler); }
 
-            return Task.FromResult(default(T));
+            return default;
         }
         #endregion
 
         #region Invoke
-        static void Invoke(string cs, object model, ScriptOptions options = null)
+        static void Invoke(string cs, object model, ScriptOptions options = null, [CallerMemberName] string handler = null)
         {
             try
             {
                 if (cs != null)
                     CSharpEval.Execute(FileOrCode(cs), model, options);
             }
-            catch { }
+            catch (Exception ex) { LogInvokeException(ex, handler); }
         }
         #endregion
 
         #region InvokeAsync
-        static Task InvokeAsync(string cs, object model, ScriptOptions options = null)
+        static async Task InvokeAsync(string cs, object model, ScriptOptions options = null, [CallerMemberName] string handler = null)
         {
             try
             {
                 if (cs != null)
-                    return CSharpEval.ExecuteAsync(FileOrCode(cs), model, options);
+                    await CSharpEval.ExecuteAsync(FileOrCode(cs), model, options).ConfigureAwait(false);
             }
-            catch { }
-
-            return Task.CompletedTask;
+            catch (Exception ex) { LogInvokeException(ex, handler); }
         }
         #endregion
 

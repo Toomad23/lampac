@@ -87,7 +87,11 @@ namespace Lampac.Engine.Middlewares
 
                 if (!init.enable || domain == "ws")
                 {
-                    httpContext.Response.Redirect($"https://{path}/{query}");
+                    // Previously built a redirect target from Request.Path, turning
+                    // /cub/evil.com into an open redirect to any host (the /cub/
+                    // prefix is AnonymousRequest, so Accsdb/WAF don't gate it).
+                    // When the feature is disabled, return 404 instead.
+                    httpContext.Response.StatusCode = 404;
                     return;
                 }
 
@@ -100,8 +104,12 @@ namespace Lampac.Engine.Middlewares
                     if (string.IsNullOrEmpty(country))
                     {
                         var ipify = await Http.Get<JObject>("https://api.ipify.org/?format=json");
-                        if (ipify != null || !string.IsNullOrEmpty(ipify.Value<string>("ip")))
-                            country = GeoIP2.Country(ipify.Value<string>("ip"));
+                        // Why: L-1 — original code used `||` so when ipify == null the second
+                        // operand dereferenced null → NRE → caught by ASP.NET → 500. Use `&&`
+                        // and a null-conditional access so an ipify outage silently returns "".
+                        string ipifyIp = ipify?.Value<string>("ip");
+                        if (ipify != null && !string.IsNullOrEmpty(ipifyIp))
+                            country = GeoIP2.Country(ipifyIp);
                     }
 
                     await httpContext.Response.WriteAsync(country ?? "", ctsHttp.Token);
@@ -223,55 +231,47 @@ namespace Lampac.Engine.Middlewares
                                     httpContext.Response.ContentLength = response.Content.Headers.ContentLength.Value;
                             }
 
-                            var semaphore = new SemaphorManager(outFile, ctsHttp.Token);
+                            using var semaphore = new SemaphorManager(outFile, ctsHttp.Token);
+                            await semaphore.WaitAsync().ConfigureAwait(false);
+
+                            byte[] buffer = ArrayPool<byte>.Shared.Rent(PoolInvk.rentChunk);
 
                             try
                             {
-                                await semaphore.WaitAsync().ConfigureAwait(false);
+                                int cacheLength = 0;
 
-                                byte[] buffer = ArrayPool<byte>.Shared.Rent(PoolInvk.rentChunk);
-
-                                try
+                                using (var cacheStream = new FileStream(outFile, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
                                 {
-                                    int cacheLength = 0;
-
-                                    using (var cacheStream = new FileStream(outFile, FileMode.Create, FileAccess.Write, FileShare.None, PoolInvk.bufferSize))
+                                    using (var responseStream = await response.Content.ReadAsStreamAsync(ctsHttp.Token).ConfigureAwait(false))
                                     {
-                                        using (var responseStream = await response.Content.ReadAsStreamAsync(ctsHttp.Token).ConfigureAwait(false))
-                                        {
-                                            int bytesRead;
+                                        int bytesRead;
 
-                                            while ((bytesRead = await responseStream.ReadAsync(buffer, ctsHttp.Token).ConfigureAwait(false)) > 0)
-                                            {
-                                                cacheLength += bytesRead;
-                                                await cacheStream.WriteAsync(buffer, 0, bytesRead).ConfigureAwait(false);
-                                                await httpContext.Response.Body.WriteAsync(buffer, 0, bytesRead, ctsHttp.Token).ConfigureAwait(false);
-                                            }
+                                        while ((bytesRead = await responseStream.ReadAsync(buffer, ctsHttp.Token).ConfigureAwait(false)) > 0)
+                                        {
+                                            cacheLength += bytesRead;
+                                            await cacheStream.WriteAsync(buffer, 0, bytesRead).ConfigureAwait(false);
+                                            await httpContext.Response.Body.WriteAsync(buffer, 0, bytesRead, ctsHttp.Token).ConfigureAwait(false);
                                         }
                                     }
-
-                                    if (!response.Content.Headers.ContentLength.HasValue || response.Content.Headers.ContentLength.Value == cacheLength)
-                                    {
-                                        cacheFiles[md5key] = cacheLength;
-                                    }
-                                    else
-                                    {
-                                        File.Delete(outFile);
-                                    }
                                 }
-                                catch
+
+                                if (!response.Content.Headers.ContentLength.HasValue || response.Content.Headers.ContentLength.Value == cacheLength)
+                                {
+                                    cacheFiles[md5key] = cacheLength;
+                                }
+                                else
                                 {
                                     File.Delete(outFile);
-                                    throw;
                                 }
-                                finally
-                                {
-                                    ArrayPool<byte>.Shared.Return(buffer);
-                                }
+                            }
+                            catch
+                            {
+                                File.Delete(outFile);
+                                throw;
                             }
                             finally
                             {
-                                semaphore.Release();
+                                ArrayPool<byte>.Shared.Return(buffer);
                             }
                             #endregion
                         }
@@ -289,9 +289,7 @@ namespace Lampac.Engine.Middlewares
                     string memkey = $"cubproxy:key2:{domain}:{uri}";
                     (byte[] content, int statusCode, string contentType) cache = default;
 
-                    var semaphore = new SemaphorManager(memkey, ctsHttp.Token);
-
-                    try
+                    using (var semaphore = new SemaphorManager(memkey, ctsHttp.Token))
                     {
                         await semaphore.WaitAsync().ConfigureAwait(false);
 
@@ -357,10 +355,6 @@ namespace Lampac.Engine.Middlewares
                         {
                             httpContext.Response.Headers["X-Cache-Status"] = "HIT";
                         }
-                    }
-                    finally
-                    {
-                        semaphore.Release();
                     }
 
                     if (init.responseContentLength && !AppInit.CompressionMimeTypes.Contains(cache.contentType))

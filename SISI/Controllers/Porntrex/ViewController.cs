@@ -17,9 +17,8 @@ namespace SISI.Controllers.Porntrex
             return await SemaphoreResult($"porntrex:view:{uri}", async e =>
             {
                 reset:
-                if (rch == null || rch.enable == false)
-                    await e.semaphore.WaitAsync();
-
+                // Why (L-5 follow-up): SemaphoreResult now acquires the semaphore before
+                // calling this func, so the inner WaitAsync would deadlock on SemaphoreSlim(1,1).
                 string memKey = ipkey(e.key);
                 if (!hybridCache.TryGetValue(memKey, out (Dictionary<string, string> links, bool userch) cache))
                 {
@@ -70,9 +69,7 @@ namespace SISI.Controllers.Porntrex
 
             return await SemaphoreResult($"Porntrex:strem:{link}", async e =>
             {
-                if (rch == null || rch.enable == false)
-                    await e.semaphore.WaitAsync();
-
+                // Why (L-5 follow-up): SemaphoreResult now holds the lock for us.
                 string memKey = ipkey(e.key);
                 if (!hybridCache.TryGetValue(memKey, out string location))
                 {

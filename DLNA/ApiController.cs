@@ -505,6 +505,9 @@ namespace DLNA.Controllers
             }
             #endregion
 
+            if (!string.IsNullOrEmpty(path) && !TryResolveInsideDlna(path, out _))
+                return Json(new { error = "invalid path" });
+
             var playlist = new List<DlnaModel>();
 
             #region folders
@@ -726,6 +729,24 @@ namespace DLNA.Controllers
         }
         #endregion
 
+        // DLNA mutating endpoints have no per-request auth of their own — when
+        // Accsdb is disabled (or WAF.allowExternalIpAccess is on) any caller
+        // reaching the listener can delete files, queue torrents, stop/start
+        // downloads, etc. Require loopback in that deployment mode; when
+        // Accsdb is enabled it already gates these paths.
+        //
+        // Why (FC-1): previously this used IsLocalIp, which also accepts
+        // RFC1918/ULA peers — any LAN host could delete files. Strictly
+        // require 127/8 or ::1.
+        bool IsDlnaMutationForbidden()
+        {
+            if (AppInit.conf.accsdb.enable)
+                return false;
+
+            string ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+            return !Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(ip);
+        }
+
         #region Delete
         [HttpPost]
         [Route("dlna/delete")]
@@ -733,6 +754,9 @@ namespace DLNA.Controllers
         {
             if (!AppInit.conf.dlna.enable)
                 return Content(string.Empty);
+
+            if (IsDlnaMutationForbidden())
+                return Forbid();
 
             if (!TryResolveInsideDlna(path, out string fullPath))
                 return NotFound();
@@ -868,12 +892,15 @@ namespace DLNA.Controllers
         #endregion
 
         #region Download
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/download")]
         async public Task<JsonResult> Download(string path, int[] indexs, string thumb, long id, bool serial, int lastCount = -1)
         {
             if (!AppInit.conf.dlna.enable)
                 return Json(new { error = "enable" });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             try
             {
@@ -1087,8 +1114,11 @@ namespace DLNA.Controllers
                                         if (string.IsNullOrEmpty(seasons))
                                             seasons = await Http.Get($"https://apitmdb.{AppInit.conf.cub.mirror}/3/{cat}/{id}/season/{s}?api_key={AppInit.conf.tmdb.api_key}&language=ru", timeoutSeconds: 20);
 
+                                        // Why: L-9 — the season cache is expected to contain the per-season
+                                        // payload (`seasons`), not the full show metadata (`json`). Using
+                                        // `json` here corrupted the season cache for every DLNA download.
                                         if (!string.IsNullOrEmpty(seasons))
-                                            IO.File.WriteAllText($"{dlna_path}/tmdb/{id}_season-{s}.json", json);
+                                            IO.File.WriteAllText($"{dlna_path}/tmdb/{id}_season-{s}.json", seasons);
                                     }
 
                                     if (number_of_seasons == 1)
@@ -1121,13 +1151,16 @@ namespace DLNA.Controllers
 
 
         #region Delete
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/stop")]
         [Route("dlna/tracker/delete")]
         async public Task<JsonResult> TorrentDelete(string infohash)
         {
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
@@ -1153,12 +1186,15 @@ namespace DLNA.Controllers
         #endregion
 
         #region Pause
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/pause")]
         async public Task<JsonResult> TorrentPause(string infohash)
         {
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
@@ -1169,12 +1205,15 @@ namespace DLNA.Controllers
         #endregion
 
         #region Start
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/start")]
         async public Task<JsonResult> TorrentStart(string infohash)
         {
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)
@@ -1185,12 +1224,15 @@ namespace DLNA.Controllers
         #endregion
 
         #region ChangeFilePriority
-        [HttpGet]
+        [HttpPost]
         [Route("dlna/tracker/changefilepriority")]
         async public Task<JsonResult> ChangeFilePriority(string infohash, int[] indexs)
         {
             if (!AppInit.conf.dlna.enable || torrentEngine == null)
                 return Json(new { });
+
+            if (IsDlnaMutationForbidden())
+                return Json(new { error = "forbidden" });
 
             var manager = torrentEngine.Torrents.FirstOrDefault(i => i.InfoHashes.V1.ToHex() == infohash);
             if (manager != null)

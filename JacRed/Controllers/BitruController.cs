@@ -22,9 +22,17 @@ namespace JacRed.Controllers
             if (!jackett.Bitru.enable)
                 return Content("disable");
 
+            // Why (FM-15): `id` is attacker-controlled and interpolated into the download/referer
+            // URLs. Non-numeric values pivot the request and inject extra query parameters. Mirror
+            // the Rutracker pattern.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             var proxyManager = new ProxyManager("bitru", jackett.Bitru);
 
-            byte[] _t = await Http.Download($"{jackett.Bitru.host}/download.php?id={id}", referer: $"{jackett.Bitru}/details.php?id={id}", proxy: proxyManager.Get());
+            // Why (FL-14): `jackett.Bitru` stringifies the whole TrackerSettings object into the
+            // referer (producing a nonsense URL). Use the configured `.host` instead.
+            byte[] _t = await Http.Download($"{jackett.Bitru.host}/download.php?id={tid}", referer: $"{jackett.Bitru.host}/details.php?id={tid}", proxy: proxyManager.Get());
             if (_t != null && BencodeTo.Magnet(_t) != null)
                 return File(_t, "application/x-bittorrent");
 

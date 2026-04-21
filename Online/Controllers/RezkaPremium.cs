@@ -313,7 +313,10 @@ namespace Online.Controllers
 
             var oninvk = onrezka.invk;
 
-            var cache = await InvokeCacheResult($"rhsprem:view:get_cdn_series:{id}:{t}:{director}:{s}:{e}:{onrezka.cookie}", 5, 
+            // Why: fingerprint onrezka.cookie (H-14) — raw cookie in a hybrid-cache key would be persisted to disk.
+            string cookieFingerprint = string.IsNullOrEmpty(onrezka.cookie) ? "" : CrypTo.md5(onrezka.cookie).Substring(0, 6);
+
+            var cache = await InvokeCacheResult($"rhsprem:view:get_cdn_series:{id}:{t}:{director}:{s}:{e}:{cookieFingerprint}", 5,
                 () => oninvk.Movie(id, t, director, s, e, favs)
             );
 

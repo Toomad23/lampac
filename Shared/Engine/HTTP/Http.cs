@@ -1175,7 +1175,15 @@ namespace Shared.Engine
         #endregion
 
         #region WriteLog
+        // Why (H-18): the previous implementation reassigned `logFileStream` from any thread without a lock
+        // and never Disposed the prior stream on date-rollover, leaking file handles and allowing concurrent
+        // Write/Flush calls to interleave bytes or throw ObjectDisposedException when another thread swapped
+        // the stream mid-call. The fix is: serialise the open/write/flush sequence under a plain lock and
+        // track the currently-open file path so rollover disposes the old stream before opening the new one.
+        // Using `lock` (rather than SemaphoreSlim) because WriteLog is already synchronous.
         static FileStream logFileStream = null;
+        static string logFileStreamPath = null;
+        static readonly object logFileStreamLock = new object();
 
         public static EventHandler<string> onlog = null;
 
@@ -1201,12 +1209,22 @@ namespace Shared.Engine
             string dateLog = DateTime.Today.ToString("dd.MM.yy");
             string patchlog = $"cache/logs/HttpClient_{dateLog}.log";
 
-            if (logFileStream == null || !File.Exists(patchlog))
-                logFileStream = new FileStream(patchlog, FileMode.Append, FileAccess.Write, FileShare.Read, PoolInvk.bufferSize);
-
             var buffer = Encoding.UTF8.GetBytes($"\n\n\n################################################################\n\n{log.ToString()}");
-            logFileStream.Write(buffer, 0, buffer.Length);
-            logFileStream.Flush();
+
+            lock (logFileStreamLock)
+            {
+                // Why: rollover (day change or log file deleted externally) must Dispose the old stream before
+                // opening a new one — previously the old handle was simply orphaned.
+                if (logFileStream == null || logFileStreamPath != patchlog || !File.Exists(patchlog))
+                {
+                    try { logFileStream?.Dispose(); } catch { }
+                    logFileStream = new FileStream(patchlog, FileMode.Append, FileAccess.Write, FileShare.Read, PoolInvk.bufferSize);
+                    logFileStreamPath = patchlog;
+                }
+
+                logFileStream.Write(buffer, 0, buffer.Length);
+                logFileStream.Flush();
+            }
         }
         #endregion
     }

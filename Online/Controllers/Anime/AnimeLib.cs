@@ -104,6 +104,9 @@ namespace Online.Controllers
             else
             {
                 #region Серии
+                if (string.IsNullOrEmpty(uri) || !System.Text.RegularExpressions.Regex.IsMatch(uri, @"^[A-Za-z0-9_\-]+$"))
+                    return OnError();
+
                 return await InvkSemaphore($"animelib:playlist:{uri}", async key =>
                 {
                     if (!hybridCache.TryGetValue(key, out Episode[] episodes))

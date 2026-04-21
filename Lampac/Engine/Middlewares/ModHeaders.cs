@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Http;
+using Shared;
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
@@ -19,7 +20,6 @@ namespace Lampac.Engine.Middlewares
             if (httpContext.Request.Path.Value.StartsWith("/cors/check", StringComparison.OrdinalIgnoreCase))
                 return Task.CompletedTask;
 
-            httpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
             httpContext.Response.Headers["Access-Control-Allow-Private-Network"] = "true";
             httpContext.Response.Headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS";
 
@@ -28,12 +28,30 @@ namespace Lampac.Engine.Middlewares
             else
                 httpContext.Response.Headers["Access-Control-Allow-Headers"] = stringAllowHeaders;
 
-            if (httpContext.Request.Headers.TryGetValue("origin", out var origin))
-                httpContext.Response.Headers["Access-Control-Allow-Origin"] = GetOrigin(origin);
-            else if (httpContext.Request.Headers.TryGetValue("referer", out var referer))
-                httpContext.Response.Headers["Access-Control-Allow-Origin"] = GetOrigin(referer);
+            // Previously the middleware reflected the caller's Origin and
+            // emitted Access-Control-Allow-Credentials: true unconditionally,
+            // allowing any site on the internet to read authenticated JSON
+            // responses from this server. The new policy reflects Origin and
+            // adds Credentials only when the Origin matches a configured
+            // allow-list; everything else gets a credentials-less "*" so the
+            // browser refuses to expose cookies cross-origin per CORS spec.
+            string reqOrigin = null;
+            if (httpContext.Request.Headers.TryGetValue("origin", out var origin) && !string.IsNullOrEmpty(origin))
+                reqOrigin = GetOrigin(origin);
+            else if (httpContext.Request.Headers.TryGetValue("referer", out var referer) && !string.IsNullOrEmpty(referer))
+                reqOrigin = GetOrigin(referer);
+
+            if (!string.IsNullOrEmpty(reqOrigin) && IsAllowedOrigin(reqOrigin))
+            {
+                httpContext.Response.Headers["Access-Control-Allow-Origin"] = reqOrigin;
+                httpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                httpContext.Response.Headers["Vary"] = "Origin";
+            }
             else
+            {
                 httpContext.Response.Headers["Access-Control-Allow-Origin"] = "*";
+                // Do not set Allow-Credentials with "*" — browsers reject it.
+            }
 
             if (Regex.IsMatch(httpContext.Request.Path.Value, "^/(lampainit|sisi|lite|online|tmdbproxy|cubproxy|tracks|transcoding|dlna|timecode|bookmark|catalog|sync|backup|ts|invc-ws)\\.js", RegexOptions.IgnoreCase) ||
                 Regex.IsMatch(httpContext.Request.Path.Value, "^/(on/|(lite|online|sisi|timecode|bookmark|sync|tmdbproxy|dlna|ts|tracks|transcoding|backup|catalog|invc-ws)/js/)", RegexOptions.IgnoreCase))
@@ -93,6 +111,24 @@ namespace Lampac.Engine.Middlewares
                 return url; // уже origin
 
             return url.Substring(0, slash);
+        }
+
+        static bool IsAllowedOrigin(string origin)
+        {
+            var allow = AppInit.conf?.cors?.allowOrigins;
+            if (allow == null || allow.Length == 0)
+                return false;
+
+            foreach (string entry in allow)
+            {
+                if (string.IsNullOrEmpty(entry))
+                    continue;
+
+                if (string.Equals(origin, entry, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
     }
 }

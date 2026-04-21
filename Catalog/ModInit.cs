@@ -1,8 +1,10 @@
-﻿using System.Globalization;
+﻿using Shared.Models.Module;
+using System.Globalization;
 using YamlDotNet.Serialization;
 
 namespace Catalog
 {
+    [ModuleEntry]
     public class ModInit
     {
         public static void loaded()

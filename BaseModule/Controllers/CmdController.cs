@@ -22,8 +22,7 @@ namespace Lampac.Controllers
             string clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
             bool isLocal = clientIp != null && Shared.Engine.Utilities.IPNetwork.IsLocalIp(clientIp);
             bool isAdmin = HttpContext.Request.Cookies.TryGetValue("passwd", out string cookiePasswd)
-                           && !string.IsNullOrEmpty(cookiePasswd)
-                           && cookiePasswd == AppInit.rootPasswd;
+                           && CrypTo.FixedTimeEquals(cookiePasswd, AppInit.rootPasswd);
 
             if (!isLocal && !isAdmin)
             {

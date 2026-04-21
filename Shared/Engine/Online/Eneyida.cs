@@ -96,7 +96,11 @@ namespace Shared.Engine.Online
 
                 if (string.IsNullOrEmpty(link))
                 {
-                    if (result.similars.Count > 0)
+                    // Why: result.similars is only allocated once the foreach finds a
+                    // row with a non-empty name (line ~73 above).  If the regex matches
+                    // nothing — e.g. the site returned an error page or changed markup —
+                    // similars stays null, and `similars.Count > 0` throws NRE.
+                    if (result.similars != null && result.similars.Count > 0)
                         return result;
 
                     if (searchEmpty)

@@ -1,6 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Playwright;
+using System.Buffers;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using Newtonsoft.Json.Linq;
 using Shared.PlaywrightCore;
 
@@ -9,6 +12,109 @@ namespace Online.Controllers
     public class Videoseed : BaseOnlineController
     {
         public Videoseed() : base(AppInit.conf.Videoseed) { }
+
+        #region Plugin-scoped AES
+        // Why (FM-10): earlier the iframe payload used the process-wide AesTo key that
+        // every adapter shares. Any other controller that accepts AesTo-encrypted input
+        // could therefore be used to forge Videoseed iframes. Derive a Videoseed-only
+        // key from AppInit.rootPasswd plus a plugin-specific salt so ciphertexts from
+        // other adapters do not decrypt here (and vice-versa). SHA-256 over the salted
+        // password is sufficient for key derivation; the password is operator-supplied
+        // and already treated as a shared secret.
+        const int NonceSize = 12;
+        const int TagSize = 16;
+
+        static readonly byte[] pluginAesKey = DerivePluginKey();
+
+        static byte[] DerivePluginKey()
+        {
+            string material = (AppInit.rootPasswd ?? string.Empty) + "|videoseed";
+            return SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        }
+
+        static string EncryptIframe(string plainText)
+        {
+            if (string.IsNullOrWhiteSpace(plainText))
+                return plainText;
+
+            try
+            {
+                int plainByteCount = Encoding.UTF8.GetMaxByteCount(plainText.Length);
+                byte[] buffer = ArrayPool<byte>.Shared.Rent(NonceSize + plainByteCount + TagSize);
+                byte[] plainBytes = ArrayPool<byte>.Shared.Rent(plainByteCount);
+                try
+                {
+                    int plainLen = Encoding.UTF8.GetBytes(plainText, plainBytes);
+
+                    Span<byte> nonce = buffer.AsSpan(0, NonceSize);
+                    Span<byte> cipher = buffer.AsSpan(NonceSize, plainLen);
+                    Span<byte> tag = buffer.AsSpan(NonceSize + plainLen, TagSize);
+
+                    RandomNumberGenerator.Fill(nonce);
+
+                    using var gcm = new AesGcm(pluginAesKey, TagSize);
+                    gcm.Encrypt(nonce, plainBytes.AsSpan(0, plainLen), cipher, tag);
+
+                    return Convert.ToBase64String(buffer.AsSpan(0, NonceSize + plainLen + TagSize));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(plainBytes);
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
+            catch
+            {
+                return plainText;
+            }
+        }
+
+        static string DecryptIframe(ReadOnlySpan<char> cipherText)
+        {
+            if (cipherText.IsEmpty)
+                return null;
+
+            byte[] decoded = null;
+            int decodedLen = 0;
+
+            try
+            {
+                decoded = ArrayPool<byte>.Shared.Rent((cipherText.Length * 3 / 4) + 4);
+
+                if (!Convert.TryFromBase64Chars(cipherText, decoded, out decodedLen))
+                    return null;
+
+                if (decodedLen < NonceSize + TagSize)
+                    return null;
+
+                int cipherLen = decodedLen - NonceSize - TagSize;
+                ReadOnlySpan<byte> nonce = decoded.AsSpan(0, NonceSize);
+                ReadOnlySpan<byte> cipher = decoded.AsSpan(NonceSize, cipherLen);
+                ReadOnlySpan<byte> tag = decoded.AsSpan(NonceSize + cipherLen, TagSize);
+
+                byte[] plain = ArrayPool<byte>.Shared.Rent(cipherLen);
+                try
+                {
+                    using var gcm = new AesGcm(pluginAesKey, TagSize);
+                    gcm.Decrypt(nonce, cipher, tag, plain.AsSpan(0, cipherLen));
+                    return Encoding.UTF8.GetString(plain, 0, cipherLen);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(plain);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                if (decoded != null)
+                    ArrayPool<byte>.Shared.Return(decoded);
+            }
+        }
+        #endregion
 
         static int ExtractOrderNumber(string key)
         {
@@ -89,8 +195,10 @@ namespace Online.Controllers
                 {
                     #region Фильм
                     var mtpl = new MovieTpl(title, original_title, 1);
-                    mtpl.Append("По-умолчанию", accsArgs($"{host}/lite/videoseed/video/{AesTo.Encrypt(cache.iframe)}") + "#.m3u8", "call", vast: init.vast);
-                    
+                    // Why (FM-10): use the plugin-derived AES key so these ciphertexts can
+                    // only be decrypted by Videoseed's Video endpoint.
+                    mtpl.Append("По-умолчанию", accsArgs($"{host}/lite/videoseed/video/{EncryptIframe(cache.iframe)}") + "#.m3u8", "call", vast: init.vast);
+
 					if (cache.translations != null)
                     {
                         foreach (var translation in cache.translations)
@@ -98,7 +206,7 @@ namespace Online.Controllers
                             if (string.IsNullOrEmpty(translation.Value) || translation.Value == cache.iframe)
                                 continue;
 
-                            mtpl.Append(translation.Key, accsArgs($"{host}/lite/videoseed/video/{AesTo.Encrypt(translation.Value)}") + "#.m3u8", "call", voice_name: translation.Key, vast: init.vast);
+                            mtpl.Append(translation.Key, accsArgs($"{host}/lite/videoseed/video/{EncryptIframe(translation.Value)}") + "#.m3u8", "call", voice_name: translation.Key, vast: init.vast);
                         }
                     }
 
@@ -163,7 +271,8 @@ namespace Online.Controllers
                             if (!string.IsNullOrEmpty(defaultAudio))
                                 iframe = ApplyDefaultAudio(iframe, defaultAudio);
 
-							etpl.Append($"{video.Key} серия", title ?? original_title, sArhc, video.Key, accsArgs($"{host}/lite/videoseed/video/{AesTo.Encrypt(iframe)}"), "call", vast: init.vast);
+							// Why (FM-10): plugin-scoped AES key — see top of file.
+							etpl.Append($"{video.Key} серия", title ?? original_title, sArhc, video.Key, accsArgs($"{host}/lite/videoseed/video/{EncryptIframe(iframe)}"), "call", vast: init.vast);
                         }
 
                         return await ContentTpl(etpl);
@@ -181,8 +290,17 @@ namespace Online.Controllers
             if (await IsRequestBlocked(rch: false))
                 return badInitMsg;
 
-            iframe = AesTo.Decrypt(iframe);
+            // Why (FM-10): decrypt with the Videoseed-scoped key (not the process-wide one).
+            iframe = DecryptIframe(iframe);
             if (string.IsNullOrEmpty(iframe))
+                return OnError();
+
+            // Why (FM-10): the decrypted iframe URL is fed into page.GotoAsync. Enforce
+            // http(s) so a forged ciphertext cannot push file://, javascript: or any
+            // other Playwright-supported scheme. Also drop non-public / link-local hosts.
+            if (!Uri.TryCreate(iframe, UriKind.Absolute, out Uri iframeParsed) ||
+                (iframeParsed.Scheme != Uri.UriSchemeHttp && iframeParsed.Scheme != Uri.UriSchemeHttps) ||
+                !Shared.Engine.Utilities.SsrfGuard.IsAllowedPublicUriBasic(iframe))
                 return OnError();
 
             var tokenValue = GetEscapedToken();
@@ -196,7 +314,10 @@ namespace Online.Controllers
 
             iframe = NormalizeIframeParams(iframe);
 
-            return await InvkSemaphore($"videoseed:video:{iframe}:{proxyManager?.CurrentProxyIp}", async key =>
+            // Why (FM-9): iframe URLs can be long; md5-fingerprint oversized input in the
+            // semaphore key (mirrors PR #18 M-24).
+            string iframeKey = iframe.Length > 256 ? CrypTo.md5(iframe) : iframe;
+            return await InvkSemaphore($"videoseed:video:{iframeKey}:{proxyManager?.CurrentProxyIp}", async key =>
             {
 				const string hardUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 				

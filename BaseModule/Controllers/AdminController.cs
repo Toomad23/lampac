@@ -36,6 +36,14 @@ namespace Lampac.Controllers
                 return false;
             }
 
+            // Why: check the password BEFORE incrementing the brute-force counter so that
+            // a legitimate admin's own AJAX traffic (10+ requests per page) doesn't lock
+            // them out. Only failed attempts should count towards the cap. Mirrors the
+            // pattern in Lampac/Engine/Middlewares/Accsdb.cs.
+            if (CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
+                return true;
+
+            // Wrong password — increment brute force counter and apply backoff
             int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
             if (attempts > 10)
@@ -44,11 +52,6 @@ namespace Lampac.Controllers
                 return false;
             }
 
-            if (AppInit.rootPasswd == passwd)
-                return true;
-
-            // Wrong password — apply backoff (fire-and-forget; caller awaits nothing here,
-            // but the async delay runs before result is used since callers await the action).
             AdminBruteGuard.BackoffAsync(attempts).GetAwaiter().GetResult();
 
             HttpContext.Response.Cookies.Delete("passwd");
@@ -132,7 +135,12 @@ namespace Lampac.Controllers
                 if (!TryAuthorizeAdmin(passwd, out ActionResult badresult))
                     return badresult;
 
-                HttpContext.Response.Cookies.Append("passwd", passwd);
+                HttpContext.Response.Cookies.Append("passwd", passwd, new Microsoft.AspNetCore.Http.CookieOptions
+                {
+                    HttpOnly = true,
+                    SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict,
+                    Path = "/admin"
+                });
                 return renderAdmin();
             }
         }
@@ -367,6 +375,42 @@ namespace Lampac.Controllers
                     return Task.CompletedTask;
                 }
             }
+            else
+            {
+                // Fresh install: Accsdb middleware lets /admin/manifest/install
+                // through without auth so the operator can bootstrap the box.
+                // Before this gate, an external attacker who noticed an
+                // unconfigured instance could drive the POST and read the
+                // root passwd back from the success HTML. Require proof of
+                // locality — the operator must SSH in and drive the install
+                // from loopback (`curl 127.0.0.1/admin/manifest/install …`).
+                //
+                // Why (FC-1): use IsStrictLoopback — IsLocalIp also accepts
+                // RFC1918 peers (10/8, 192.168/16, 172.16/12, fc00::/7), so
+                // any LAN attacker would satisfy it. Fresh install must only
+                // be driven from the host itself (127.0.0.0/8 or ::1).
+                //
+                // Why (FC-2): UseForwardedHeaders runs before MVC with an
+                // unbounded ForwardLimit and the default KnownProxies/
+                // KnownNetworks (loopback is trusted). So HttpContext.
+                // Connection.RemoteIpAddress may already have been overwritten
+                // by X-Forwarded-For sent from a loopback reverse proxy / Tor
+                // hidden service / local unix socket / anything peering over
+                // lo. Read the true socket peer via IHttpConnectionFeature,
+                // which is populated by Kestrel before any middleware runs.
+                var connFeat = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpConnectionFeature>();
+                string remoteIp = connFeat?.RemoteIpAddress?.ToString()
+                                  ?? HttpContext.Connection.RemoteIpAddress?.ToString();
+                if (!Shared.Engine.Utilities.IPNetwork.IsStrictLoopback(remoteIp))
+                {
+                    HttpContext.Response.StatusCode = 403;
+                    HttpContext.Response.ContentType = "text/plain; charset=utf-8";
+                    return HttpContext.Response.WriteAsync(
+                        "First-time install must be driven from a loopback peer.\n" +
+                        "SSH into the host and run the request against 127.0.0.1 (or `docker exec … curl localhost/admin/manifest/install`).",
+                        HttpContext.RequestAborted);
+                }
+            }
 
             HttpContext.Response.ContentType = "text/html; charset=utf-8";
 
@@ -377,7 +421,7 @@ namespace Lampac.Controllers
 
 			if (IO.File.Exists("module/manifest.json"))
 			{
-                if (HttpContext.Request.Cookies.TryGetValue("passwd", out string passwd) && passwd == AppInit.rootPasswd)
+                if (HttpContext.Request.Cookies.TryGetValue("passwd", out string passwd) && CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
                 {
                     isEditManifest = true;
                 }
@@ -529,7 +573,7 @@ namespace Lampac.Controllers
 <div class=""block"">
     <b>Админ панель</b><br /><br />
     Aдрес: {host}/admin<br />
-    Пароль: {IO.File.ReadAllText("passwd")}
+    Пароль: смотри файл <code>passwd</code> на хосте (<code>cat passwd</code> или <code>docker exec -it lampac cat passwd</code>)
 </div>
 
 <hr />

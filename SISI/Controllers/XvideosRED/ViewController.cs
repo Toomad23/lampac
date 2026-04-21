@@ -21,7 +21,10 @@ namespace SISI.Controllers.XvideosRED
                     if (url == null)
                         return OnError("stream_links");
 
-                    string html = await Http.Get(url, cookie: init.cookie, timeoutSeconds: init.GetHttpVersion(), httpversion: init.GetHttpVersion(), proxy: proxy, headers: httpHeaders(init));
+                    // Why: L-15 — timeoutSeconds was wired to GetHttpVersion (returns 1/2/3) instead of
+                    // GetHttpTimeout, so every request aborted after 1-2s. Use the right getter to match
+                    // sibling controllers.
+                    string html = await Http.Get(url, cookie: init.cookie, timeoutSeconds: init.GetHttpTimeout(), httpversion: init.GetHttpVersion(), proxy: proxy, headers: httpHeaders(init));
                     if (html == null)
                         return OnError("stream_links");
 

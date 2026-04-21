@@ -23,13 +23,18 @@ namespace JacRed.Controllers
             if (!jackett.Toloka.enable)
                 return Content("disable");
 
+            // Why (FM-15): `id` is attacker-controlled and interpolated into the download URL.
+            // Non-numeric values pivot to other paths / parameter-inject. Mirror Rutracker pattern.
+            if (!int.TryParse(id, out int tid) || tid <= 0)
+                return Content("invalid id");
+
             string cookie = await getCookie();
             if (string.IsNullOrEmpty(cookie))
                 return Content("cookie == null");
 
             var proxyManager = new ProxyManager("toloka", jackett.Toloka);
 
-            byte[] _t = await Http.Download($"{jackett.Toloka.host}/download.php?id={id}", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Toloka.host);
+            byte[] _t = await Http.Download($"{jackett.Toloka.host}/download.php?id={tid}", proxy: proxyManager.Get(), cookie: cookie, referer: jackett.Toloka.host);
             if (_t != null && BencodeTo.Magnet(_t) != null)
                 return File(_t, "application/x-bittorrent");
 
@@ -380,7 +385,9 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"JacRed/toloka getCookie: {ex.Message}"); }
+            // Why (FL-16): type only — never the raw ex.Message (may contain URLs, credentials,
+            // HTML fragments that shouldn't reach stdout/container logs).
+            catch (Exception ex) { Console.WriteLine($"JacRed/toloka getCookie: {ex.GetType().Name}"); }
 
             return null;
         }

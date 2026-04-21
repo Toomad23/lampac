@@ -288,6 +288,12 @@ namespace Online.Controllers
             if (string.IsNullOrEmpty(playlist) || string.IsNullOrEmpty(csrf))
                 return OnError();
 
+            // playlist is concatenated into an upstream URL; without this check a
+            // crafted value like "@attacker.tld/foo" would rewrite the authority.
+            // Upstream Lumex paths always start with '/'.
+            if (playlist[0] != '/' || playlist.Contains('@'))
+                return OnError();
+
             if (await IsRequestBlocked(rch: false, rch_check: false))
                 return badInitMsg;
 

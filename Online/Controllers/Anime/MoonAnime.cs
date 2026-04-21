@@ -12,6 +12,45 @@ namespace Online.Controllers
 
         public MoonAnime() : base(AppInit.conf.MoonAnime) { }
 
+        // Why (FH-8): Video(vod) fetches a caller-supplied URL server-side, so
+        // without a host allow-list it is an SSRF primitive (e.g. 169.254.169.254).
+        // Mirror Animebesst.IsAllowedUri and pin to init.host / init.apihost.
+        bool IsAllowedUri(string uri, bool schemeOptional)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return false;
+
+            string candidate = uri;
+            if (schemeOptional && !candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                  !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                candidate = "https://" + candidate;
+
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = parsed.Host;
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            foreach (string configured in new[] { init?.host, init?.apihost })
+            {
+                if (string.IsNullOrEmpty(configured))
+                    continue;
+
+                if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                    continue;
+
+                string allowedHost = configuredUri.Host;
+                if (host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
 
         [HttpGet]
         [Route("lite/moonanime")]
@@ -196,6 +235,11 @@ namespace Online.Controllers
 
             if (string.IsNullOrEmpty(init.token))
                 return OnError("token", statusCode: 401, gbcache: false);
+
+            // Why (FH-8): validate vod host before the server-side GET so arbitrary
+            // internal URLs cannot be probed through this endpoint.
+            if (!IsAllowedUri(vod, schemeOptional: false))
+                return OnError();
 
             return await InvkSemaphore($"moonanime:vod:{vod}", async key =>
             {

@@ -25,7 +25,6 @@ namespace Lampac.Engine.Middlewares
         }
 
         private readonly RequestDelegate _next;
-        static bool manifestInitial = false;
         IMemoryCache memoryCache;
 
         public Accsdb(RequestDelegate next, IMemoryCache mem)
@@ -39,17 +38,20 @@ namespace Lampac.Engine.Middlewares
             var requestInfo = httpContext.Features.Get<RequestModel>();
 
             #region manifest/install
-            if (!manifestInitial)
+            // Why (FL-1): the previous implementation cached the
+            // File.Exists("module/manifest.json") result in a static bool and
+            // never re-checked it. If the manifest was deleted (or the module/
+            // directory wiped) after startup, the install redirect never fired
+            // again; conversely if the admin created the manifest after boot
+            // without restarting, the redirect loop persisted. The existence
+            // check is cheap so re-evaluate on every request inside this branch.
+            if (!File.Exists("module/manifest.json"))
             {
-                if (!File.Exists("module/manifest.json"))
-                {
-                    if (httpContext.Request.Path.Value.StartsWith("/admin/manifest/install", StringComparison.OrdinalIgnoreCase))
-                        return _next(httpContext);
+                if (httpContext.Request.Path.Value.StartsWith("/admin/manifest/install", StringComparison.OrdinalIgnoreCase))
+                    return _next(httpContext);
 
-                    httpContext.Response.Redirect("/admin/manifest/install");
-                    return Task.CompletedTask;
-                }
-                else { manifestInitial = true; }
+                httpContext.Response.Redirect("/admin/manifest/install");
+                return Task.CompletedTask;
             }
             #endregion
 
@@ -58,15 +60,15 @@ namespace Lampac.Engine.Middlewares
             {
                 if (httpContext.Request.Cookies.TryGetValue("passwd", out string passwd))
                 {
+                    if (Shared.Engine.CrypTo.FixedTimeEquals(passwd, AppInit.rootPasswd))
+                        return _next(httpContext);
+
+                    // Wrong password — increment brute force counter and apply backoff
                     int attempts = AdminBruteGuard.Increment(memoryCache, requestInfo.IP);
 
                     if (attempts > 10)
                         return httpContext.Response.WriteAsync("Too many attempts, try again tomorrow.", httpContext.RequestAborted);
 
-                    if (passwd == AppInit.rootPasswd)
-                        return _next(httpContext);
-
-                    // Wrong password — apply exponential backoff then fall through to redirect
                     return AdminBruteGuard.BackoffAsync(attempts).ContinueWith(_ =>
                     {
                         httpContext.Response.Redirect("/admin/auth");
@@ -313,20 +315,24 @@ namespace Lampac.Engine.Middlewares
 
 
         #region setLogs
+        static readonly object _logsLockObj = new object();
         static string logsLock = string.Empty;
 
         static void setLogs(string name, string account_email)
         {
-            string logFile = $"cache/logs/accsdb/{DateTime.Now:dd-MM-yyyy}.lock.txt";
-            if (logsLock != string.Empty && !File.Exists(logFile))
-                logsLock = string.Empty;
-
-            string line = $"{name} / {account_email} / {CrypTo.md5(account_email)}.*.log";
-
-            if (!logsLock.Contains(line))
+            lock (_logsLockObj)
             {
-                logsLock += $"{DateTime.Now}: {line}\n";
-                File.WriteAllText(logFile, logsLock);
+                string logFile = $"cache/logs/accsdb/{DateTime.Now:dd-MM-yyyy}.lock.txt";
+                if (logsLock != string.Empty && !File.Exists(logFile))
+                    logsLock = string.Empty;
+
+                string line = $"{name} / {account_email} / {CrypTo.md5(account_email)}.*.log";
+
+                if (!logsLock.Contains(line))
+                {
+                    logsLock += $"{DateTime.Now}: {line}\n";
+                    File.WriteAllText(logFile, logsLock);
+                }
             }
         }
         #endregion

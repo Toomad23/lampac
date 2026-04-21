@@ -9,7 +9,10 @@ namespace Online.Controllers
         public VkMovie() : base(AppInit.conf.VkMovie) { }
 
         static readonly int client_id = 52461373;
-        static string access_token;
+        // Why: M-14 — volatile so updates from EnsureAnonymToken (done under semaphore) are immediately
+        // observable on other threads and plain readers snapshot a single coherent value rather than
+        // a torn reference.
+        static volatile string access_token;
         static DateTime token_expires;
 
         [HttpGet]
@@ -30,8 +33,11 @@ namespace Online.Controllers
             rhubFallback:
             var cache = await InvokeCacheResult<CatalogVideo[]>(ipkey($"vkmovie:view:{searchTitle}:{year}"), 20, async e =>
             {
+                // Why: M-14 — snapshot the volatile token once per request so the POST body cannot observe
+                // a half-updated reference if EnsureAnonymToken refreshes the value concurrently.
+                string tokenSnapshot = access_token;
                 string url = $"{init.corsHost()}/method/catalog.getVideoSearchWeb2?v=5.264&client_id={client_id}";
-                string data = $"screen_ref=search_video_service&input_method=keyboard_search_button&q={HttpUtility.UrlEncode($"{title} {year}")}&access_token={access_token}";
+                string data = $"screen_ref=search_video_service&input_method=keyboard_search_button&q={HttpUtility.UrlEncode($"{title} {year}")}&access_token={tokenSnapshot}";
 
                 var root = await httpHydra.Post<JObject>(url, data);
 
@@ -151,7 +157,12 @@ namespace Online.Controllers
                     return true;
 
                 string url = "https://login.vk.com/?act=get_anonym_token";
-                string postData = $"client_secret=o557NLIkAErNhakXrQ7A&client_id={client_id}&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487";
+                // Why: L-8 — avoid hardcoding the VK anonymous OAuth client_secret. Allow operators to override via AppInit.conf.VkMovie.client_secret.
+                // Fallback preserves the shared VK-XBMC client secret so existing deployments keep working when the setting is unset.
+                string clientSecret = AppInit.conf.VkMovie?.client_secret;
+                if (string.IsNullOrEmpty(clientSecret))
+                    clientSecret = "o557NLIkAErNhakXrQ7A"; // shared VK-XBMC anonymous client secret (public fallback)
+                string postData = $"client_secret={clientSecret}&client_id={client_id}&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487";
 
                 JObject root = null;
 

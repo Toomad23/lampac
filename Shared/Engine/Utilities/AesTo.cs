@@ -1,33 +1,55 @@
-﻿using System.Security.Cryptography;
+using System.Buffers;
+using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 
 namespace Shared.Engine
 {
+    // Authenticated encryption for short-lived proxy-link payloads.
+    //
+    // Previous implementation used AES-CBC with a static IV and a key generated
+    // via CrypTo.unic (Random.Shared, a non-crypto PRNG seeded from TickCount).
+    // That was forgeable: with enough ciphertexts an attacker could recover the
+    // PRNG state, and CBC without a MAC allowed bit-flipping the decoded JSON
+    // (e.g. flipping verifyip=true to false or rewriting the embedded URL for
+    // SSRF). Switched to AES-GCM with:
+    //   * 256-bit key from RandomNumberGenerator (written once per install)
+    //   * fresh 96-bit nonce per message, prepended to the ciphertext
+    //   * 128-bit authentication tag verified on decrypt
+    //
+    // Wire format of the returned string: Base64( nonce(12) || cipher(n) || tag(16) ).
+    //
+    // Old ciphertexts are intentionally rejected (different format, different key)
+    // — proxy links are short-lived and clients will re-request them.
     public static class AesTo
     {
-        static byte[] aesKey, aesIV;
-        static readonly ThreadLocal<ThreadState> tls = new(() => new ThreadState());
+        const int NonceSize = 12;
+        const int TagSize = 16;
 
-        static AesTo()
+        static readonly byte[] aesKey = LoadOrCreateKey();
+
+        static byte[] LoadOrCreateKey()
         {
-            if (File.Exists("cache/aeskey"))
-            {
-                var i = File.ReadAllText("cache/aeskey").Split("/");
-                aesKey = Encoding.UTF8.GetBytes(i[0]);
-                aesIV = Encoding.UTF8.GetBytes(i[1]);
-            }
-            else
-            {
-                string k = CrypTo.unic(16);
-                string v = CrypTo.unic(16);
-                File.WriteAllText("cache/aeskey", $"{k}/{v}");
+            const string path = "cache/aeskey";
 
-                aesKey = Encoding.UTF8.GetBytes(k);
-                aesIV = Encoding.UTF8.GetBytes(v);
+            if (File.Exists(path))
+            {
+                try
+                {
+                    string content = File.ReadAllText(path).Trim();
+                    byte[] k = Convert.FromBase64String(content);
+                    if (k.Length == 32)
+                        return k;
+                }
+                catch { /* fall through to regeneration */ }
             }
+
+            byte[] fresh = new byte[32];
+            RandomNumberGenerator.Fill(fresh);
+
+            Directory.CreateDirectory("cache");
+            File.WriteAllText(path, Convert.ToBase64String(fresh));
+            return fresh;
         }
-
 
         public static string Encrypt(string plainText)
         {
@@ -36,28 +58,30 @@ namespace Shared.Engine
 
             try
             {
-                var state = tls.Value;
-                var aes = state.Aes;
+                int plainByteCount = Encoding.UTF8.GetMaxByteCount(plainText.Length);
 
-                int writtenPlain = Encoding.UTF8.GetBytes(plainText, 0, plainText.Length, state.encryptPlain, 0);
+                byte[] buffer = ArrayPool<byte>.Shared.Rent(NonceSize + plainByteCount + TagSize);
+                byte[] plainBytes = ArrayPool<byte>.Shared.Rent(plainByteCount);
+                try
+                {
+                    int plainLen = Encoding.UTF8.GetBytes(plainText, plainBytes);
 
-                int blockSize = aes.BlockSize / 8; // 16
-                int paddedLen = ((writtenPlain / blockSize) + 1) * blockSize;
+                    Span<byte> nonce = buffer.AsSpan(0, NonceSize);
+                    Span<byte> cipher = buffer.AsSpan(NonceSize, plainLen);
+                    Span<byte> tag = buffer.AsSpan(NonceSize + plainLen, TagSize);
 
-                if (paddedLen > state.encryptCipherBuf.Length)
-                    return plainText;
+                    RandomNumberGenerator.Fill(nonce);
 
-                // ВАЖНО: iv вторым параметром, destination третьим
-                int cipherLen = aes.EncryptCbc(
-                    state.encryptPlain.AsSpan(0, writtenPlain),
-                    aesIV,                                // iv (16 байт)
-                    state.encryptCipherBuf.AsSpan(0, paddedLen), // destination
-                    PaddingMode.PKCS7);
+                    using var gcm = new AesGcm(aesKey, TagSize);
+                    gcm.Encrypt(nonce, plainBytes.AsSpan(0, plainLen), cipher, tag);
 
-                if (!Convert.TryToBase64Chars(state.encryptCipherBuf.AsSpan(0, cipherLen), state.encryptBase64Chars, out int charsWritten))
-                    return plainText;
-
-                return new string(state.encryptBase64Chars, 0, charsWritten);
+                    return Convert.ToBase64String(buffer.AsSpan(0, NonceSize + plainLen + TagSize));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(plainBytes);
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
             }
             catch
             {
@@ -70,49 +94,47 @@ namespace Shared.Engine
             if (cipherText.IsEmpty)
                 return null;
 
+            byte[] decoded = null;
+            int decodedLen = 0;
+
             try
             {
-                var state = tls.Value;
-                var aes = state.Aes;
+                // Upper bound on decoded length for a Base64 string of length N is ~ N * 3/4.
+                decoded = ArrayPool<byte>.Shared.Rent((cipherText.Length * 3 / 4) + 4);
 
-                if (!Convert.TryFromBase64Chars(cipherText, state.decryptCipherBuf, out int cipherLen))
+                if (!Convert.TryFromBase64Chars(cipherText, decoded, out decodedLen))
                     return null;
 
-                // ВАЖНО: iv вторым параметром, destination третьим
-                int plainLen = aes.DecryptCbc(
-                    state.decryptCipherBuf.AsSpan(0, cipherLen),
-                    aesIV,                              // iv (16 байт)
-                    state.decryptPlain.AsSpan(0, cipherLen),   // destination
-                    PaddingMode.PKCS7);
+                if (decodedLen < NonceSize + TagSize)
+                    return null;
 
-                return Encoding.UTF8.GetString(state.decryptPlain, 0, plainLen);
+                int cipherLen = decodedLen - NonceSize - TagSize;
+
+                ReadOnlySpan<byte> nonce = decoded.AsSpan(0, NonceSize);
+                ReadOnlySpan<byte> cipher = decoded.AsSpan(NonceSize, cipherLen);
+                ReadOnlySpan<byte> tag = decoded.AsSpan(NonceSize + cipherLen, TagSize);
+
+                byte[] plain = ArrayPool<byte>.Shared.Rent(cipherLen);
+                try
+                {
+                    using var gcm = new AesGcm(aesKey, TagSize);
+                    gcm.Decrypt(nonce, cipher, tag, plain.AsSpan(0, cipherLen));
+                    return Encoding.UTF8.GetString(plain, 0, cipherLen);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(plain);
+                }
             }
             catch
             {
+                // Any failure — bad Base64, wrong length, tag mismatch, key change — yields null.
                 return null;
             }
-        }
-
-
-        private sealed class ThreadState
-        {
-            public readonly Aes Aes;
-
-            public char[] encryptBase64Chars = new char[PoolInvk.rentLargeChunk];
-            public byte[] encryptCipherBuf = new byte[PoolInvk.rentLargeChunk];
-            public byte[] encryptPlain = new byte[PoolInvk.rentLargeChunk];
-
-            public byte[] decryptCipherBuf = new byte[PoolInvk.rentLargeChunk];
-            public byte[] decryptPlain = new byte[PoolInvk.rentLargeChunk];
-
-            public ThreadState()
+            finally
             {
-                Aes = Aes.Create();
-                Aes.Mode = CipherMode.CBC;
-                Aes.Padding = PaddingMode.PKCS7;
-
-                Aes.Key = aesKey;
-                Aes.IV = aesIV;
+                if (decoded != null)
+                    ArrayPool<byte>.Shared.Return(decoded);
             }
         }
     }

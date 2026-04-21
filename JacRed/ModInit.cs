@@ -1,9 +1,11 @@
 ﻿using JacRed.Models.AppConf;
 using Newtonsoft.Json;
+using Shared.Models.Module;
 using System.Threading;
 
 namespace Jackett
 {
+    [ModuleEntry]
     public class ModInit
     {
         #region ModInit

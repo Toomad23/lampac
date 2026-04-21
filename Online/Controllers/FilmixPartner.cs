@@ -215,8 +215,22 @@ namespace Online.Controllers
             if (!init.enable)
                 return OnError("disable", gbcache: false);
 
-            if (!HttpContext.Request.Headers.TryGetValue("low_passw", out var low_passw) || low_passw.ToString() != init.lowlevel_api_passw)
+            // Why (FM-8): an empty lowlevel_api_passw turned this endpoint into an
+            // open proxy to Filmix's API — `low_passw: ""` matched. Fail closed when
+            // the admin has not configured a password.
+            if (string.IsNullOrEmpty(init.lowlevel_api_passw))
+                return Unauthorized();
+
+            if (!HttpContext.Request.Headers.TryGetValue("low_passw", out var low_passw) ||
+                !CrypTo.FixedTimeEquals(low_passw.ToString(), init.lowlevel_api_passw))
                 return OnError("lowlevel_api", gbcache: false);
+
+            // Why (FM-8): {*uri} is a catch-all so attackers can try "..\", "..%2f" or stray
+            // query markers to escape the corsHost prefix or fold in extra params. Reject
+            // any "..", "?" or "#" segment — callers that need query strings should pass
+            // them through a trusted controller.
+            if (string.IsNullOrEmpty(uri) || uri.Contains("..") || uri.Contains('?') || uri.Contains('#'))
+                return OnError("uri", gbcache: false);
 
             string XFXTOKEN = await getXFXTOKEN();
             if (string.IsNullOrWhiteSpace(XFXTOKEN))

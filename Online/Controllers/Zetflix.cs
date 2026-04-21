@@ -9,7 +9,10 @@ namespace Online.Controllers
     {
         public Zetflix() : base(AppInit.conf.Zetflix) { }
 
-        static string PHPSESSID = null;
+        // Why: M-14 — replace naked static session field with a per-proxy-IP concurrent dictionary so
+        // simultaneous requests can safely share sessions that belong to the same proxy identity
+        // without reading torn values or leaking another user's cookie.
+        static readonly ConcurrentDictionary<string, string> _phpSessions = new ConcurrentDictionary<string, string>();
 
         [HttpGet]
         [Route("lite/zetflix")]
@@ -39,13 +42,17 @@ namespace Online.Controllers
 
             int rs = serial == 1 ? (s == -1 ? 1 : s) : s;
 
-            string html = await InvokeCache($"zetfix:view:{kinopoisk_id}:{rs}:{proxyManager?.CurrentProxyIp}", 20, async () => 
+            string html = await InvokeCache($"zetfix:view:{kinopoisk_id}:{rs}:{proxyManager?.CurrentProxyIp}", 20, async () =>
             {
                 string uri = $"{ztfhost}/iplayer/videodb.php?kp={kinopoisk_id}" + (rs > 0 ? $"&season={rs}" : "");
 
                 var headers = HeadersModel.Init(Chromium.baseContextOptions.ExtraHTTPHeaders.ToDictionary(), ("Referer", "https://www.google.com/"));
 
-                string result = string.IsNullOrEmpty(PHPSESSID) ? null : await Http.Get(uri, proxy: proxy, cookie: $"PHPSESSID={PHPSESSID}", headers: headers);
+                // Why: M-14 — snapshot the per-proxy PHPSESSID under a stable key and read/write through
+                // ConcurrentDictionary so another request flipping the cookie cannot produce a torn read here.
+                string sessionKey = proxyManager?.CurrentProxyIp ?? "default";
+                string phpSessId = _phpSessions.TryGetValue(sessionKey, out var existing) ? existing : null;
+                string result = string.IsNullOrEmpty(phpSessId) ? null : await Http.Get(uri, proxy: proxy, cookie: $"PHPSESSID={phpSessId}", headers: headers);
                 if (result != null && !result.StartsWith("<script>(function"))
                 {
                     if (!result.Contains("new Playerjs"))
@@ -111,7 +118,11 @@ namespace Online.Controllers
                         }
 
                         var cook = await page.Context.CookiesAsync().ConfigureAwait(false);
-                        PHPSESSID = cook?.FirstOrDefault(i => i.Name == "PHPSESSID")?.Value;
+                        // Why: M-14 — publish the freshly-acquired cookie under the same per-proxy key so
+                        // subsequent requests on this proxy reuse it, and do not race against another proxy's cookie.
+                        string freshPhpSessId = cook?.FirstOrDefault(i => i.Name == "PHPSESSID")?.Value;
+                        if (!string.IsNullOrEmpty(freshPhpSessId))
+                            _phpSessions[sessionKey] = freshPhpSessId;
 
                         if (!result.Contains("new Playerjs"))
                             return null;

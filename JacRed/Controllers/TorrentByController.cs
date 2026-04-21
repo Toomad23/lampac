@@ -30,8 +30,11 @@ namespace JacRed.Controllers
 
             proxyManager.Refresh();
 
-            if (string.IsNullOrEmpty(magnet))
-                return Content("empty");
+            // Why (FM-12): `magnet` is a user-supplied query parameter. Without a scheme check
+            // this acts as an open redirect to any URL an attacker chooses. Require the
+            // magnet: scheme explicitly.
+            if (string.IsNullOrEmpty(magnet) || !magnet.StartsWith("magnet:?", StringComparison.OrdinalIgnoreCase))
+                return Content("error");
 
             return Redirect(magnet);
         }

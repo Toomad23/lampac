@@ -8,6 +8,12 @@ namespace JacRed.Controllers
 {
     public class ApiController : JacBaseController
     {
+        // Why: defense-in-depth against catastrophic regex backtracking on attacker-controlled `query`
+        // (JacRed search is reachable anonymously when AppInit.conf.apikey is empty). The cap + 50ms
+        // match-timeout bound worst-case CPU per request.
+        const int MaxQueryLength = 300;
+        static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromMilliseconds(50);
+
         #region Conf
         [HttpGet]
         [Route("api/v1.0/conf")]
@@ -33,34 +39,45 @@ namespace JacRed.Controllers
 
             if (rqnum && query != null)
             {
-                var mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+) ([0-9]{4})$");
+                // Why: bound query length before any regex to neutralise backtracking on adversarial input.
+                if (query.Length > MaxQueryLength)
+                    query = query.Substring(0, MaxQueryLength);
 
-                if (mNum.Success)
+                try
                 {
-                    if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}"))
-                    {
-                        var g = mNum.Groups;
-                        title = g[1].Value;
-                        title_original = g[2].Value;
-                        year = int.Parse(g[3].Value);
-                    }
-                }
-                else
-                {
-                    if (Regex.IsMatch(query, "^([^a-z-A-Z]+) ((19|20)[0-9]{2})$"))
-                        return Content(JsonConvertPool.SerializeObject(new { Results = new List<object>(), jacred = ModInit.conf.typesearch == "red" }), "application/json; charset=utf-8");
-
-                    mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+)$");
+                    var mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+) ([0-9]{4})$", RegexOptions.None, RegexMatchTimeout);
 
                     if (mNum.Success)
                     {
-                        if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}"))
+                        if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}", RegexOptions.None, RegexMatchTimeout))
                         {
                             var g = mNum.Groups;
                             title = g[1].Value;
                             title_original = g[2].Value;
+                            year = int.Parse(g[3].Value);
                         }
                     }
+                    else
+                    {
+                        if (Regex.IsMatch(query, "^([^a-z-A-Z]+) ((19|20)[0-9]{2})$", RegexOptions.None, RegexMatchTimeout))
+                            return Content(JsonConvertPool.SerializeObject(new { Results = new List<object>(), jacred = ModInit.conf.typesearch == "red" }), "application/json; charset=utf-8");
+
+                        mNum = Regex.Match(query, "^([^a-z-A-Z]+) ([^а-я-А-Я]+)$", RegexOptions.None, RegexMatchTimeout);
+
+                        if (mNum.Success)
+                        {
+                            if (Regex.IsMatch(mNum.Groups[2].Value, "[a-zA-Z0-9]{2}", RegexOptions.None, RegexMatchTimeout))
+                            {
+                                var g = mNum.Groups;
+                                title = g[1].Value;
+                                title_original = g[2].Value;
+                            }
+                        }
+                    }
+                }
+                catch (RegexMatchTimeoutException)
+                {
+                    // Why: adversarial query exceeded the 50ms budget; skip rqnum parsing and let the normal flow handle it.
                 }
             }
             #endregion
@@ -73,7 +90,22 @@ namespace JacRed.Controllers
             if (ModInit.conf.typesearch == "red")
             {
                 #region red
-                string memoryKey = $"{ModInit.conf.typesearch}:{query}:{rqnum}:{title}:{title_original}:{year}:{is_serial}";
+                // Why (FM-14): `query`, `title`, `title_original` are attacker-controlled. Cap each
+                // component at MaxQueryLength (matching the existing protection at line ~43) and
+                // md5-fingerprint the composite when it still exceeds 256 chars so cache keys can't
+                // be blown up one entry per adversarial input.
+                string qCap = query == null ? null : (query.Length > MaxQueryLength ? query.Substring(0, MaxQueryLength) : query);
+                string tCap = title == null ? null : (title.Length > MaxQueryLength ? title.Substring(0, MaxQueryLength) : title);
+                string toCap = title_original == null ? null : (title_original.Length > MaxQueryLength ? title_original.Substring(0, MaxQueryLength) : title_original);
+
+                string memoryKey = $"{ModInit.conf.typesearch}:{qCap}:{rqnum}:{tCap}:{toCap}:{year}:{is_serial}";
+                if (memoryKey.Length > 256)
+                {
+                    using var md5 = System.Security.Cryptography.MD5.Create();
+                    byte[] hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(memoryKey));
+                    memoryKey = $"{ModInit.conf.typesearch}:md5:" + Convert.ToHexString(hash);
+                }
+
                 if (!hybridCache.TryGetValue(memoryKey, out List<TorrentDetails> _redCache, inmemory: false))
                 {
                     var res = RedApi.Indexers(rqnum, apikey, query, title, title_original, year, is_serial, category);
@@ -176,9 +208,16 @@ namespace JacRed.Controllers
                     if (search.StartsWith("kp"))
                         uri = $"&kp={search.Remove(0, 2)}";
 
-                    var root = await Http.Get<JObject>("https://api.alloha.tv/?token=04941a9a3ca3ac16e2b4327347bbc1" + uri, timeoutSeconds: 10);
-                    cache.original_name = root?.Value<JObject>("data")?.Value<string>("original_name");
-                    cache.name = root?.Value<JObject>("data")?.Value<string>("name");
+                    // Why: require operator-supplied Alloha token. Removed shared-public fallback token —
+                    // unauthenticated use of someone else's quota is abuse and the token can be revoked
+                    // at any time, breaking deployments silently. When unset, skip enrichment (kp/imdb → name).
+                    string allohaToken = AppInit.conf.Alloha?.token;
+                    if (!string.IsNullOrEmpty(allohaToken))
+                    {
+                        var root = await Http.Get<JObject>($"https://api.alloha.tv/?token={allohaToken}" + uri, timeoutSeconds: 10);
+                        cache.original_name = root?.Value<JObject>("data")?.Value<string>("original_name");
+                        cache.name = root?.Value<JObject>("data")?.Value<string>("name");
+                    }
 
                     hybridCache.Set(memkey, cache, DateTime.Now.AddDays(1), inmemory: false);
                 }

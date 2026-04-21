@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shared;
+using System;
+using System.Web;
 
 namespace Lampac.Controllers
 {
@@ -17,6 +19,14 @@ namespace Lampac.Controllers
         [Route("/api/chromium/iframe")]
         public ActionResult RenderIframe(string src)
         {
+            // HtmlAttributeEncode alone stops quote-breakout but still lets
+            // "javascript:..." / "data:..." URIs execute inside the iframe's
+            // src. Require an absolute http(s) URL before embedding.
+            if (!Uri.TryCreate(src, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+                return StatusCode(400);
+
+            string safeSrc = HttpUtility.HtmlAttributeEncode(parsed.AbsoluteUri);
             return ContentTo($@"<html lang=""ru"">
                 <head>
                     <meta charset=""UTF-8"">
@@ -25,7 +35,7 @@ namespace Lampac.Controllers
                     <title>chromium iframe</title>
                 </head>
                 <body>
-                    <iframe width=""560"" height=""400"" src=""{src}"" frameborder=""0"" allow=""*"" allowfullscreen></iframe>
+                    <iframe width=""560"" height=""400"" src=""{safeSrc}"" frameborder=""0"" allow=""*"" allowfullscreen></iframe>
                 </body>
             </html>");
         }

@@ -16,6 +16,10 @@ namespace Shared.Models.Online.Settings
 
         public string filetype { get; set; }
 
+        // Why: allow operators to override the compiled-in XBMC client_secret (L-8).
+        // Null means "use the built-in default" so out-of-the-box behaviour is preserved.
+        public string client_secret { get; set; } = null;
+
 
         public KinoPubSettings Clone()
         {

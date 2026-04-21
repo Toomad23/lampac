@@ -90,6 +90,24 @@ namespace Shared.Engine
                             continue;
                         }
 
+                        // Why (FH-4): if the YAML pins a commit_sha, we must download
+                        // only that commit. When GitHub's current branch head does
+                        // not match the pin we refuse to update (operator gets a
+                        // clear log). No pin = current behaviour + warning.
+                        if (!string.IsNullOrEmpty(repository.PinnedCommitSha))
+                        {
+                            if (!string.Equals(repository.PinnedCommitSha, commitSha, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.WriteLine($"ModuleRepository: repository '{repository.Url}' branch head ({commitSha}) does not match pinned commit_sha ({repository.PinnedCommitSha}); refusing to update");
+                                continue;
+                            }
+                            commitSha = repository.PinnedCommitSha;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"ModuleRepository: repository '{repository.Url}' has no commit_sha pin in YAML; proceeding with unpinned latest ({commitSha}). Add 'commit_sha: {commitSha}' to lock.");
+                        }
+
                         string stateKey = repository.StateKey;
                         if (!missingModule && state.TryGetValue(stateKey, out string storedSha) && string.Equals(storedSha, commitSha, StringComparison.OrdinalIgnoreCase))
                         {
@@ -211,11 +229,17 @@ namespace Shared.Engine
                 string branch = GetString(map, "branch", "ref");
                 var folders = ParseFolders(map);
 
+                // Why (FH-4): accept a commit_sha / sha / pin field so operators
+                // can pin a repository to a known-good commit. Enforced below in
+                // UpdateModules.
+                string pinnedSha = GetString(map, "commit_sha", "commit", "sha", "pin");
+
                 var repository = new RepositoryEntry
                 {
                     Url = url.Trim(),
                     Branch = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim(),
-                    Folders = folders
+                    Folders = folders,
+                    PinnedCommitSha = string.IsNullOrWhiteSpace(pinnedSha) ? null : pinnedSha.Trim()
                 };
 
                 if (!TryParseGitHubUrl(repository.Url, out string owner, out string name))
@@ -1003,6 +1027,12 @@ namespace Shared.Engine
             public string Token { get; set; }
             public string AcceptHeader { get; set; }
             public List<RepositoryFolder> Folders { get; set; } = new List<RepositoryFolder>();
+
+            // Why (FH-4): optional commit_sha pin. When present, the archive
+            // commit returned by GitHub must equal this pin or we refuse to
+            // download. When absent we keep current behaviour with a console
+            // warning (non-breaking for existing repositories).
+            public string PinnedCommitSha { get; set; }
 
             public bool IsValid => !string.IsNullOrEmpty(Url) && !string.IsNullOrEmpty(Owner) && !string.IsNullOrEmpty(Name) && Folders.Count > 0;
 

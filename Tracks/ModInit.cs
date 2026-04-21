@@ -9,6 +9,7 @@ using Tracks.Engine;
 
 namespace Tracks
 {
+    [ModuleEntry]
     public class ModInit
     {
         public static bool IsInitialization { get; private set; }

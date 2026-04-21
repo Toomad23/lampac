@@ -391,8 +391,12 @@ namespace Shared
             {
                 string url_reserve = ProxyLink.Encrypt(uri, requestInfo.IP, httpHeaders(conf.host ?? conf.apihost, headers), conf != null && conf.useproxystream ? proxy : null, conf?.plugin);
 
+                // Why (M-8): previously AccsDbInvk.Args was applied to the raw `uri`, silently
+                // overwriting the encrypted token produced just above and sending the clear URL
+                // through the reserve channel. Apply it to `url_reserve` so the encrypted value
+                // survives the accsdb wrapper.
                 if (AppInit.conf.accsdb.enable && !AppInit.conf.serverproxy.encrypt)
-                    url_reserve = AccsDbInvk.Args(uri, HttpContext);
+                    url_reserve = AccsDbInvk.Args(url_reserve, HttpContext);
 
                 uri += $" or {host}/proxy/{url_reserve}";
             }
@@ -451,103 +455,89 @@ namespace Shared
         #region InvokeBaseCache
         async public ValueTask<T> InvokeBaseCache<T>(string key, TimeSpan time, RchClient rch, Func<Task<T>> onget, ProxyManager proxyManager = null, bool? memory = null)
         {
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
 
-            try
+            if (rch?.enable != true)
+                await semaphore.WaitAsync();
+
+            if (hybridCache.TryGetValue(key, out T val, memory))
             {
-                if (rch?.enable != true)
-                    await semaphore.WaitAsync();
-
-                if (hybridCache.TryGetValue(key, out T val, memory))
-                {
-                    HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
-                    return val;
-                }
-
-                HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
-
-                val = await onget.Invoke();
-                if (val == null || val.Equals(default(T)))
-                    return default;
-
-                if (rch?.enable != true)
-                    proxyManager?.Success();
-
-                hybridCache.Set(key, val, time, memory);
+                HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
                 return val;
             }
-            finally
-            {
-                semaphore.Release();
-            }
+
+            HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
+
+            val = await onget.Invoke();
+            if (val == null || val.Equals(default(T)))
+                return default;
+
+            if (rch?.enable != true)
+                proxyManager?.Success();
+
+            hybridCache.Set(key, val, time, memory);
+            return val;
         }
         #endregion
 
         #region InvokeBaseCacheResult
         async public ValueTask<CacheResult<T>> InvokeBaseCacheResult<T>(string key, TimeSpan time, RchClient rch, ProxyManager proxyManager, Func<CacheResult<T>, Task<CacheResult<T>>> onget, bool? memory = null)
         {
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
 
-            try
+            if (rch?.enable != true)
+                await semaphore.WaitAsync();
+
+            var entry = hybridCache.Entry<T>(key, memory);
+
+            if (entry.success)
             {
-                if (rch?.enable != true)
-                    await semaphore.WaitAsync();
+                HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
 
-                var entry = hybridCache.Entry<T>(key, memory);
-
-                if (entry.success)
+                return new CacheResult<T>()
                 {
-                    HttpContext.Response.Headers["X-Invoke-Cache"] = "HIT";
-
-                    return new CacheResult<T>() 
-                    { 
-                        IsSuccess = true, 
-                        ISingleCache = entry.singleCache,
-                        Value = entry.value
-                    };
-                }
-
-                HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
-
-                var val = await onget.Invoke(new CacheResult<T>());
-
-                if (val == null || val.Value == null)
-                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "null" };
-
-                if (!val.IsSuccess)
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return val;
-                }
-
-                if (val.Value.Equals(default(T)))
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return val;
-                }
-
-                if (typeof(T) == typeof(string) && string.IsNullOrWhiteSpace(val.ToString()))
-                {
-                    if (val.refresh_proxy && rch?.enable != true)
-                        proxyManager?.Refresh();
-
-                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "empty" };
-                }
-
-                if (rch?.enable != true)
-                    proxyManager?.Success();
-
-                hybridCache.Set(key, val.Value, time, memory);
-                return new CacheResult<T>() { IsSuccess = true, Value = val.Value };
+                    IsSuccess = true,
+                    ISingleCache = entry.singleCache,
+                    Value = entry.value
+                };
             }
-            finally
+
+            HttpContext.Response.Headers["X-Invoke-Cache"] = "MISS";
+
+            var val = await onget.Invoke(new CacheResult<T>());
+
+            if (val == null || val.Value == null)
+                return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "null" };
+
+            if (!val.IsSuccess)
             {
-                semaphore.Release();
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return val;
             }
+
+            if (val.Value.Equals(default(T)))
+            {
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return val;
+            }
+
+            if (typeof(T) == typeof(string) && string.IsNullOrWhiteSpace(val.ToString()))
+            {
+                if (val.refresh_proxy && rch?.enable != true)
+                    proxyManager?.Refresh();
+
+                return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "empty" };
+            }
+
+            if (rch?.enable != true)
+                proxyManager?.Success();
+
+            hybridCache.Set(key, val.Value, time, memory);
+            return new CacheResult<T>() { IsSuccess = true, Value = val.Value };
         }
         #endregion
 
@@ -557,17 +547,9 @@ namespace Shared
             if (rch?.enable == true)
                 return await func.Invoke();
 
-            var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
-
-            try
-            {
-                await semaphore.WaitAsync();
-                return await func.Invoke();
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            using var semaphore = new SemaphorManager(key, TimeSpan.FromSeconds(40));
+            await semaphore.WaitAsync();
+            return await func.Invoke();
         }
         #endregion
 
@@ -1025,10 +1007,18 @@ namespace Shared
         #region RedirectToPlay
         public RedirectResult RedirectToPlay(string url)
         {
-            if (!url.Contains(" "))
-                return new RedirectResult(url);
+            string target = url != null && url.Contains(" ") ? url.Split(" ")[0].Trim() : url;
 
-            return new RedirectResult(url.Split(" ")[0].Trim());
+            // Without a scheme check, a compromised upstream that returns
+            // "javascript:alert(document.cookie)" (or data:text/html,...) as the
+            // stream URL would execute on the Lampac origin when the victim
+            // opens the ?play=true endpoint in a browser. Reject non-http(s)
+            // redirects to about:blank.
+            if (!Uri.TryCreate(target, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+                return new RedirectResult("about:blank");
+
+            return new RedirectResult(target);
         }
         #endregion
 

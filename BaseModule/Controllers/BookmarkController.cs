@@ -235,6 +235,17 @@ namespace Lampac.Controllers
                             if (string.IsNullOrWhiteSpace(where))
                                 return JsonFailure();
 
+                            // Why (L-14): strict whitelist even on the fullset==true path.
+                            // Previously fullset==true accepted any `where` string and wrote
+                            // it verbatim into the stored JSON blob; GetBookmarksForResponse
+                            // reflects the whole blob back on /list, so an attacker could
+                            // pollute their own blob with arbitrary keys (and any client
+                            // that imports/exports the blob picks them up). Limit writes to
+                            // the known BookmarkCategories plus "card" — the same surface
+                            // the non-fullset path below already gates on.
+                            if (where != "card" && !BookmarkCategories.Contains(where))
+                                return JsonFailure();
+
                             if (IsDbInitialization && AppInit.conf.sync_user.fullset == false)
                             {
                                 if (where == "card" || BookmarkCategories.Contains(where))

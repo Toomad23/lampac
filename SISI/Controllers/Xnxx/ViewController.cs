@@ -14,7 +14,9 @@ namespace SISI.Controllers.Xnxx
                 return badInitMsg;
 
             rhubFallback:
-            var cache = await InvokeCacheResult<StreamItem>($"xnxx:view:{uri}", 20, async e =>
+            // Why: M-24 — fingerprint oversized uris so unbounded user input cannot bloat the cache key.
+            string uriKey = !string.IsNullOrEmpty(uri) && uri.Length > 256 ? CrypTo.md5(uri) : uri;
+            var cache = await InvokeCacheResult<StreamItem>($"xnxx:view:{uriKey}", 20, async e =>
             {
                 string url = XnxxTo.StreamLinksUri(init.corsHost(), uri);
                 if (url == null)

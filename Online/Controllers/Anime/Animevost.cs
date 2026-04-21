@@ -7,6 +7,46 @@ namespace Online.Controllers
     {
         public Animevost() : base(AppInit.conf.Animevost) { }
 
+        // Why (FH-9): Index(uri=...) fetches the caller-supplied URL server-side for the
+        // playlist branch. Without a host allow-list that is an SSRF primitive; pin the
+        // host to init.host / init.apihost, matching Animebesst.IsAllowedUri.
+        bool IsAllowedUri(string uri, bool schemeOptional)
+        {
+            if (string.IsNullOrEmpty(uri))
+                return false;
+
+            string candidate = uri;
+            if (schemeOptional && !candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                                  !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                candidate = "https://" + candidate;
+
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = parsed.Host;
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            foreach (string configured in new[] { init?.host, init?.apihost })
+            {
+                if (string.IsNullOrEmpty(configured))
+                    continue;
+
+                if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                    continue;
+
+                string allowedHost = configuredUri.Host;
+                if (host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
         [HttpGet]
         [Route("lite/animevost")]
         async public Task<ActionResult> Index(string title, int year, string uri, int s, bool rjson = false, bool similar = false)
@@ -95,14 +135,19 @@ namespace Online.Controllers
                 });
                 #endregion
             }
-            else 
+            else
             {
+                // Why (FH-9): uri is user-supplied and is about to be fetched server-side;
+                // reject anything whose host is not in the configured allow-list.
+                if (!IsAllowedUri(uri, schemeOptional: false))
+                    return OnError();
+
                 #region Серии
                 var cache = await InvokeCacheResult<List<(string episode, string id)>>($"animevost:playlist:{uri}", 30, async e =>
                 {
                     var links = new List<(string episode, string id)>(4);
 
-                    await httpHydra.GetSpan(uri, news => 
+                    await httpHydra.GetSpan(uri, news =>
                     {
                         string data = Rx.Match(news, "var data = ([^\n\r]+)");
                         if (data == null)

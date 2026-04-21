@@ -30,6 +30,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -297,9 +298,54 @@ namespace Lampac
 
                     if (mod.dll.EndsWith(".dll"))
                     {
+                        // Why (FH-1): mod.dll may be (a) a bare filename
+                        // ("Foo.dll"), (b) a combined "module/folder/foo.dll"
+                        // produced by the nested-manifest scan below, or
+                        // (c) a relative "folder/foo.dll". Reject rooted paths
+                        // and ".." anywhere, and verify the resolved absolute
+                        // path stays strictly under module/.
+                        if (Path.IsPathRooted(mod.dll) || mod.dll.Contains("..", StringComparison.Ordinal))
+                        {
+                            Console.WriteLine($"CompilationMod: rejected mod.dll '{mod.dll}' (rooted or traversal)");
+                            return;
+                        }
+
+                        // Normalise separators, then decide which base to join
+                        // against: if it already begins with "module/" treat the
+                        // value as relative to CWD (matches the legacy
+                        // Assembly.LoadFrom(mod.dll) behaviour), otherwise join
+                        // onto ModuleRoot.
+                        string normalizedDll = mod.dll.Replace('\\', '/');
+                        string dllFullPath = normalizedDll.StartsWith("module/", StringComparison.OrdinalIgnoreCase)
+                            ? Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, normalizedDll))
+                            : Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "module", normalizedDll));
+
+                        if (!ModulePaths.IsContainedIn(dllFullPath, ModulePaths.ModuleRoot))
+                        {
+                            Console.WriteLine($"CompilationMod: rejected mod.dll '{mod.dll}' (escapes module root)");
+                            return;
+                        }
+
+                        if (!File.Exists(dllFullPath))
+                        {
+                            Console.WriteLine($"CompilationMod: mod.dll '{mod.dll}' not found at {dllFullPath}");
+                            return;
+                        }
+
+                        // Why (FH-4): optional sha256 check, non-breaking when absent.
+                        if (!ModulePaths.VerifyDllIntegrity(dllFullPath, mod.sha256, mod.dll))
+                            return;
+
                         try
                         {
-                            mod.assembly = Assembly.LoadFrom(mod.dll);
+                            // Why (FH-3): collectible ALC so this assembly can be
+                            // unloaded on rebuild. Trade-off: collectible contexts
+                            // cannot host Reflection.Emit of dynamic modules that
+                            // require collectible=false (e.g. some JIT/IL-heavy
+                            // libraries). See LoadedModule fallback.
+                            var alc = new AssemblyLoadContext($"lampac-mod:{Path.GetFileName(dllFullPath)}", isCollectible: true);
+                            mod.loadHandle = new ModuleLoadHandle(alc, collectible: true);
+                            mod.assembly = alc.LoadFromAssemblyPath(dllFullPath);
 
                             AppInit.modules.Add(mod);
                             mvcBuilder.AddApplicationPart(mod.assembly);
@@ -318,7 +364,40 @@ namespace Lampac
                     {
                         var syntaxTree = new List<SyntaxTree>();
 
-                        foreach (string file in Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories))
+                        // Why (FL-2): prefer an explicit sources array from the
+                        // manifest to avoid compiling arbitrary .cs files that land
+                        // in the module directory. When sources is absent we keep
+                        // the legacy glob for back-compat but warn and limit to the
+                        // top level (no recursion).
+                        IEnumerable<string> sourceFiles;
+                        if (mod.sources != null && mod.sources.Length > 0)
+                        {
+                            var list = new List<string>();
+                            string pathRoot = ModulePaths.NormalizeDirectory(Path.GetFullPath(path));
+                            foreach (string rel in mod.sources)
+                            {
+                                if (string.IsNullOrWhiteSpace(rel) || Path.IsPathRooted(rel) || rel.Contains("..", StringComparison.Ordinal))
+                                {
+                                    Console.WriteLine($"CompilationMod: rejected sources entry '{rel}' for {mod.dll}");
+                                    continue;
+                                }
+                                string full = Path.GetFullPath(Path.Combine(path, rel));
+                                if (!ModulePaths.IsContainedIn(full, pathRoot) || !File.Exists(full))
+                                {
+                                    Console.WriteLine($"CompilationMod: sources entry '{rel}' missing or escapes module dir");
+                                    continue;
+                                }
+                                list.Add(full);
+                            }
+                            sourceFiles = list;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"CompilationMod: module '{mod.dll}' has no 'sources' array; falling back to top-level *.cs glob (deprecated)");
+                            sourceFiles = Directory.GetFiles(path, "*.cs", SearchOption.TopDirectoryOnly);
+                        }
+
+                        foreach (string file in sourceFiles)
                         {
                             string _file = file.Replace("\\", "/").Replace(path.Replace("\\", "/"), "").Replace(Environment.CurrentDirectory.Replace("\\", "/"), "");
                             if (Regex.IsMatch(_file, "(\\.vs|bin|obj|Properties)/", RegexOptions.IgnoreCase))
@@ -331,12 +410,18 @@ namespace Lampac
                         {
                             foreach (string refns in mod.references)
                             {
-                                string dlrns = Path.Combine(Environment.CurrentDirectory, "module", "references", refns);
-                                if (!File.Exists(dlrns))
-                                    dlrns = Path.Combine(Environment.CurrentDirectory, "module", mod.dll, refns);
-
-                                if (File.Exists(dlrns) && Program.assemblieReferences.FirstOrDefault(a => Path.GetFileName(a.FilePath) == refns) == null)
+                                // Why (FM-2): reject rooted / traversal reference
+                                // names and verify the resolved path stays inside
+                                // module/references/ or module/{mod.dll}/.
+                                if (!ModulePaths.TryResolveReference(refns, mod.dll, out string dlrns, out string refReason))
                                 {
+                                    Console.WriteLine($"CompilationMod: skipping reference for {mod.dll} ({refReason})");
+                                    continue;
+                                }
+
+                                if (Program.assemblieReferences.FirstOrDefault(a => Path.GetFileName(a.FilePath) == refns) == null)
+                                {
+                                    // References are shared across modules; keep in Default ALC.
                                     var assembly = Assembly.LoadFrom(dlrns);
                                     Program.assemblieReferences.Add(MetadataReference.CreateFromFile(assembly.Location));
                                 }
@@ -362,7 +447,16 @@ namespace Lampac
                             else
                             {
                                 ms.Seek(0, SeekOrigin.Begin);
-                                mod.assembly = Assembly.Load(ms.ToArray());
+
+                                // Why (FH-3): compiled-from-source modules go into a
+                                // dedicated collectible ALC so rebuilds unload the
+                                // previous version. The byte[] is loaded via the ALC
+                                // rather than Assembly.Load(byte[]) to pin the lifetime
+                                // to our handle.
+                                var alc = new AssemblyLoadContext($"lampac-mod-src:{Path.GetFileName(mod.dll)}", isCollectible: true);
+                                mod.loadHandle = new ModuleLoadHandle(alc, collectible: true);
+                                ms.Seek(0, SeekOrigin.Begin);
+                                mod.assembly = alc.LoadFromStream(ms);
 
                                 Console.WriteLine("compilation module: " + mod.dll);
                                 mod.index = mod.index != 0 ? mod.index : (100 + AppInit.modules.Count);
@@ -390,7 +484,20 @@ namespace Lampac
                         if (mod.dll == null)
                             mod.dll = folderMod.Split("/")[1];
                         else if (mod.dll.EndsWith(".dll"))
+                        {
+                            // Why (FH-2): if manifest.dll is rooted, Path.Combine
+                            // discards folderMod and returns the absolute path verbatim
+                            // (/etc/evil.dll). Validate separately and verify the
+                            // final full path stays inside this module's folder.
+                            if (!ModulePaths.TryResolveNestedModuleDll(folderMod, mod.dll, out _, out string nestedReason))
+                            {
+                                Console.WriteLine($"CompilationMod: rejected nested mod.dll '{mod.dll}' from {folderMod} ({nestedReason})");
+                                continue;
+                            }
+                            // Store a relative form so downstream path-joins still work,
+                            // but CompilationMod's .dll branch re-resolves + re-verifies.
                             mod.dll = Path.Combine(folderMod, mod.dll);
+                        }
 
                         CompilationMod(mod);
                     }
@@ -484,11 +591,30 @@ namespace Lampac
             });
 
             #region UseForwardedHeaders
+            // Why (FC-2): previously ForwardLimit = null combined with the
+            // default KnownProxies/KnownNetworks (127.0.0.1/8 + ::1) let ANY
+            // loopback peer (reverse proxy, local Tor hidden service, unix
+            // socket peer, a local process) spoof X-Forwarded-For and have
+            // HttpContext.Connection.RemoteIpAddress rewritten to whatever
+            // they sent. That breaks the FC-1 loopback gates (without the
+            // FC-2 raw-IP read) and per-IP rate limiting / audit logs.
+            //
+            // Defence in depth:
+            //  * ForwardLimit = 1 — only trust the first hop's header chain.
+            //  * KnownNetworks.Clear() + KnownProxies.Clear() — drop the
+            //    "loopback is trusted" default. A trusted forwarder must be
+            //    declared explicitly via init.KnownProxies.
+            //  * real_ip_cf / listen.frontend=cloudflare users already handle
+            //    the CF-Connecting-IP rewrite themselves in RequestInfo.cs,
+            //    so we do not need to (and must not) trust XFF for them.
             var forwarded = new ForwardedHeadersOptions
             {
-                ForwardLimit = null,
+                ForwardLimit = 1,
                 ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
             };
+
+            forwarded.KnownNetworks.Clear();
+            forwarded.KnownProxies.Clear();
 
             if (init.KnownProxies != null && init.KnownProxies.Count > 0)
             {
@@ -670,6 +796,11 @@ namespace Lampac
                 if (result.Success)
                 {
                     ms.Seek(0, SeekOrigin.Begin);
+                    // Why (FH-3): basemod is first-party shipped code (BaseModule/
+                    // Controllers). Per the module-loader hardening policy,
+                    // first-party DLLs remain in AssemblyLoadContext.Default so
+                    // they are not subject to collectible-ALC limitations and
+                    // compose correctly with the host's controller caches.
                     var assembly = Assembly.Load(ms.ToArray());
                     mvcBuilder.AddApplicationPart(assembly);
                 }
@@ -691,6 +822,15 @@ namespace Lampac
         static readonly Dictionary<string, FileSystemWatcher> moduleWatchers = new();
 
         static readonly object moduleWatcherLock = new object();
+
+        // Why (FM-1): previously the FileSystemWatcher callback performed a
+        // DisposeModule → remove ApplicationPart → AddApplicationPart →
+        // NotifyChanges → EnsureCache(forced:true) sequence without any lock.
+        // Two overlapping .cs saves (common with editors) could run the sequence
+        // concurrently, leaving the PartManager with dangling/duplicated parts.
+        // All mutating operations on the part list or the module entry caches
+        // must be serialised through this lock.
+        static readonly object _moduleRebuildLock = new object();
 
         void WatchersDynamicModule(IApplicationBuilder app, IMvcBuilder mvcBuilder, RootModule mod, string path)
         {
@@ -740,78 +880,88 @@ namespace Lampac
 
                         watcher.EnableRaisingEvents = false;
 
-                        try
+                        // Why (FM-1): serialise the whole DisposeModule →
+                        // AddApplicationPart → NotifyChanges → EnsureCache sequence;
+                        // concurrent edits would otherwise race the PartManager.
+                        lock (_moduleRebuildLock)
                         {
-                            var parts = mvcBuilder.PartManager.ApplicationParts
-                                .OfType<AssemblyPart>()
-                                .Where(p => p.Assembly == mod.assembly)
-                                .ToList();
-
-                            #region update manifest.json
-                            string manifestPath = Path.Combine(path, "manifest.json");
-                            RootModule manifestMod = null;
-
-                            if (File.Exists(manifestPath))
+                            try
                             {
-                                try
+                                var parts = mvcBuilder.PartManager.ApplicationParts
+                                    .OfType<AssemblyPart>()
+                                    .Where(p => p.Assembly == mod.assembly)
+                                    .ToList();
+
+                                #region update manifest.json
+                                string manifestPath = Path.Combine(path, "manifest.json");
+                                RootModule manifestMod = null;
+
+                                if (File.Exists(manifestPath))
                                 {
-                                    manifestMod = JsonConvert.DeserializeObject<RootModule>(File.ReadAllText(manifestPath));
-
-                                    var excludedProperties = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                                    try
                                     {
-                                        nameof(RootModule.dynamic),
-                                        nameof(RootModule.index),
-                                        nameof(RootModule.dll),
-                                        nameof(RootModule.assembly),
-                                        nameof(RootModule.initspace)
-                                    };
+                                        manifestMod = JsonConvert.DeserializeObject<RootModule>(File.ReadAllText(manifestPath));
 
-                                    foreach (var property in typeof(RootModule).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                                        var excludedProperties = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                                        {
+                                            nameof(RootModule.dynamic),
+                                            nameof(RootModule.index),
+                                            nameof(RootModule.dll),
+                                            nameof(RootModule.assembly),
+                                            nameof(RootModule.initspace),
+                                            nameof(RootModule.loadHandle)
+                                        };
+
+                                        foreach (var property in typeof(RootModule).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                                        {
+                                            if (!property.CanRead || !property.CanWrite || excludedProperties.Contains(property.Name))
+                                                continue;
+
+                                            property.SetValue(mod, property.GetValue(manifestMod));
+                                        }
+                                    }
+                                    catch (Exception manifestEx)
                                     {
-                                        if (!property.CanRead || !property.CanWrite || excludedProperties.Contains(property.Name))
-                                            continue;
-
-                                        property.SetValue(mod, property.GetValue(manifestMod));
+                                        Console.WriteLine($"Failed to update manifest for {mod.dll}: {manifestEx.Message}");
                                     }
                                 }
-                                catch (Exception manifestEx)
+                                #endregion
+
+                                var assembly = CSharpEval.Compilation(mod);
+                                if (assembly != null)
                                 {
-                                    Console.WriteLine($"Failed to update manifest for {mod.dll}: {manifestEx.Message}");
+                                    DisposeModule(mod);
+
+                                    foreach (var part in parts)
+                                        mvcBuilder.PartManager.ApplicationParts.Remove(part);
+
+                                    if (manifestMod != null)
+                                        mod.initspace = manifestMod.initspace;
+
+                                    mod.assembly = assembly;
+                                    LoadedModule(app, mod);
+
+                                    mvcBuilder.PartManager.ApplicationParts.Add(new AssemblyPart(mod.assembly));
+                                    DynamicActionDescriptorChangeProvider.Instance.NotifyChanges();
+
+                                    // Why (FM-1): these cache refreshes must also be
+                                    // inside the lock so readers can't observe a half
+                                    // swapped module list.
+                                    MiddlewaresModuleEntry.EnsureCache(forced: true);
+                                    OnlineModuleEntry.EnsureCache(forced: true);
+                                    SisiModuleEntry.EnsureCache(forced: true);
+
+                                    Console.WriteLine("rebuild module: " + mod.dll);
                                 }
                             }
-                            #endregion
-
-                            var assembly = CSharpEval.Compilation(mod);
-                            if (assembly != null)
+                            catch (Exception ex)
                             {
-                                DisposeModule(mod);
-
-                                foreach (var part in parts)
-                                    mvcBuilder.PartManager.ApplicationParts.Remove(part);
-
-                                if (manifestMod != null)
-                                    mod.initspace = manifestMod.initspace;
-
-                                mod.assembly = assembly;
-                                LoadedModule(app, mod);
-
-                                mvcBuilder.PartManager.ApplicationParts.Add(new AssemblyPart(mod.assembly));
-                                DynamicActionDescriptorChangeProvider.Instance.NotifyChanges();
-
-                                MiddlewaresModuleEntry.EnsureCache(forced: true);
-                                OnlineModuleEntry.EnsureCache(forced: true);
-                                SisiModuleEntry.EnsureCache(forced: true);
-
-                                Console.WriteLine("rebuild module: " + mod.dll);
+                                Console.WriteLine($"Failed to rebuild module {mod.dll}: {ex.Message}");
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Failed to rebuild module {mod.dll}: {ex.Message}");
-                        }
-                        finally
-                        {
-                            watcher.EnableRaisingEvents = true;
+                            finally
+                            {
+                                watcher.EnableRaisingEvents = true;
+                            }
                         }
                     });
                 }
@@ -828,12 +978,48 @@ namespace Lampac
         #endregion
 
         #region LoadedModule
+        // Why (FM-3): refuse to invoke "loaded" / "Dispose" on an arbitrary type.
+        // The type must either implement IModuleEntry or wear [ModuleEntry] -
+        // otherwise a hostile manifest could point initspace at any static class
+        // that happens to expose a loaded() method (e.g. System.IO.File).
+        static bool IsTrustedEntry(Type t)
+        {
+            if (t == null) return false;
+
+            if (typeof(IModuleEntry).IsAssignableFrom(t))
+                return true;
+
+            // Check via attribute name (avoids a hard reference from older
+            // first-party modules that haven't been recompiled yet).
+            foreach (var attr in t.GetCustomAttributes(inherit: false))
+            {
+                string n = attr.GetType().FullName;
+                if (n == typeof(ModuleEntryAttribute).FullName || n.EndsWith(".ModuleEntryAttribute", StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
         void LoadedModule(IApplicationBuilder app, RootModule mod)
         {
             if (mod == null)
                 return;
 
-            if (mod.initspace != null && mod.assembly.GetType(mod.NamespacePath(mod.initspace)) is Type t && t.GetMethod("loaded") is MethodInfo m)
+            if (mod.initspace == null || mod.assembly == null)
+                return;
+
+            Type t = mod.assembly.GetType(mod.NamespacePath(mod.initspace));
+            if (t == null)
+                return;
+
+            if (!IsTrustedEntry(t))
+            {
+                Console.WriteLine($"LoadedModule: '{mod.NamespacePath(mod.initspace)}' does not implement IModuleEntry / [ModuleEntry]; not invoking loaded()");
+                return;
+            }
+
+            if (t.GetMethod("loaded") is MethodInfo m)
             {
                 if (mod.version >= 2)
                 {
@@ -864,24 +1050,53 @@ namespace Lampac
 
             if (module != null)
             {
-                try
-                {
-                    if (module.initspace != null && module.assembly.GetType(module.NamespacePath(module.initspace)) is Type t && t.GetMethod("Dispose") is MethodInfo m)
-                        m.Invoke(null, []);
-                }
-                catch { }
+                DisposeOne(module);
             }
             else
             {
                 foreach (var mod in AppInit.modules)
+                    DisposeOne(mod);
+            }
+        }
+
+        static void DisposeOne(RootModule mod)
+        {
+            // Why (FM-3): same trust gate as LoadedModule for the Dispose call.
+            try
+            {
+                if (mod.initspace != null && mod.assembly?.GetType(mod.NamespacePath(mod.initspace)) is Type t && IsTrustedEntry(t) && t.GetMethod("Dispose") is MethodInfo m)
+                    m.Invoke(null, []);
+            }
+            catch { }
+
+            // Why (FH-3): after the module disposes, unload its collectible
+            // context and keep the weak reference so a follow-up GC pass can
+            // confirm the assemblies were actually released. Root leaks (event
+            // handlers, static caches, timers) show up here as a live target
+            // after multiple GCs.
+            var handle = mod.loadHandle;
+            if (handle != null && handle.IsCollectible)
+            {
+                try
                 {
-                    try
-                    {
-                        if (mod.initspace != null && mod.assembly.GetType(mod.NamespacePath(mod.initspace)) is Type t && t.GetMethod("Dispose") is MethodInfo m)
-                            m.Invoke(null, []);
-                    }
-                    catch { }
+                    handle.Context.Unload();
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"DisposeModule: Unload failed for {mod.dll}: {ex.Message}");
+                }
+
+                _ = Task.Run(() =>
+                {
+                    for (int i = 0; i < 10 && handle.Tracker != null && handle.Tracker.IsAlive; i++)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+
+                    if (handle.Tracker != null && handle.Tracker.IsAlive)
+                        Console.WriteLine($"DisposeModule: module '{mod.dll}' AssemblyLoadContext is still alive after Unload; likely a root leak (event handler / static reference).");
+                });
             }
         }
         #endregion

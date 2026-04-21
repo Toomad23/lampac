@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Playwright;
+using Shared.Engine.Utilities;
 using Shared.Models.Online.VideoDB;
 using Shared.PlaywrightCore;
 
@@ -74,6 +75,13 @@ namespace Online.Controllers
             if (string.IsNullOrEmpty(link))
                 return OnError();
 
+            // Why (FH-12): link is user-supplied and is about to be dereferenced by
+            // Http.GetLocation / rch.Headers / page.GotoAsync. Require http(s) and run
+            // SsrfGuard to reject loopback, RFC1918, link-local and metadata hosts so
+            // the manifest endpoint cannot be turned into an internal-network probe.
+            if (!SsrfGuard.IsAllowedPublicUriBasic(link))
+                return OnError();
+
             if (await IsRequestBlocked(rch: true, rch_check: false))
                 return badInitMsg;
 
@@ -96,7 +104,10 @@ namespace Online.Controllers
                     return ShowError(rch_error);
             }
 
-            return await InvkSemaphore($"videodb:video:{link}", async key =>
+            // Why (FM-9): link is user-supplied; fingerprint the cache key when oversized
+            // so a long attacker-supplied URL cannot enlarge the key space (PR #18 M-24).
+            string linkKey = link.Length > 256 ? CrypTo.md5(link) : link;
+            return await InvkSemaphore($"videodb:video:{linkKey}", async key =>
             {
                 reset:
                 string memKey = ipkey(key);

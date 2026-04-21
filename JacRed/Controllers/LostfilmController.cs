@@ -23,7 +23,13 @@ namespace JacRed.Controllers
             if (!jackett.Lostfilm.enable)
                 return Content("disable");
 
-            var _t = await getTorrent(episodeid);
+            // Why (FM-15): `episodeid` is attacker-controlled and is interpolated into
+            // v_search.php?a=... — a non-numeric value pivots the request to other paths
+            // or parameter-injects. Mirror the Rutracker fix pattern.
+            if (!int.TryParse(episodeid, out int eid) || eid <= 0)
+                return Content("invalid id");
+
+            var _t = await getTorrent(eid);
             if (_t != null)
                 return File(_t, "application/x-bittorrent");
 
@@ -110,7 +116,7 @@ namespace JacRed.Controllers
 
 
         #region getTorrent
-        async Task<byte[]> getTorrent(string episodeid)
+        async Task<byte[]> getTorrent(int episodeid)
         {
             try
             {
@@ -124,9 +130,13 @@ namespace JacRed.Controllers
                 // Получаем ссылку на поиск
                 string v_search = await Http.Get($"{jackett.Lostfilm.host}/v_search.php?a={episodeid}", proxy: proxy, cookie: cookie);
                 string retreSearchUrl = new Regex("url=(\")?(https?://[^/]+/[^\"]+)").Match(v_search ?? "").Groups[2].Value.Trim();
-                if (!string.IsNullOrWhiteSpace(retreSearchUrl))
+                if (!string.IsNullOrWhiteSpace(retreSearchUrl) && isLostfilmHost(retreSearchUrl))
                 {
                     // Загружаем HTML поиска
+                    // Why (FH-15): the scraped `retreSearchUrl` is an arbitrary external URL.
+                    // Re-sending the Lostfilm session cookie to a non-Lostfilm host exfiltrates
+                    // credentials. Gate the fetch (and the torrent download below) with an
+                    // allow-list based on the configured Lostfilm host's registrable domain.
                     string shtml = await Http.Get(retreSearchUrl, proxy: proxy, cookie: cookie);
                     if (!string.IsNullOrWhiteSpace(shtml))
                     {
@@ -138,8 +148,11 @@ namespace JacRed.Controllers
                                 string torrentFile = match.Groups[1].Value;
                                 string quality = Regex.Match(match.Groups[2].Value, "(2160p|2060p|1440p|1080p|720p)").Groups[1].Value;
 
-                                if (!string.IsNullOrWhiteSpace(torrentFile) && !string.IsNullOrWhiteSpace(quality))
+                                if (!string.IsNullOrWhiteSpace(torrentFile) && !string.IsNullOrWhiteSpace(quality) && isLostfilmHost(torrentFile))
                                 {
+                                    // Why (FH-15): `torrentFile` is scraped from the retreSearchUrl response
+                                    // (attacker-influenceable). Apply the same allow-list before re-sending
+                                    // the Lostfilm session cookie.
                                     byte[] torrent = await Http.Download(torrentFile, referer: $"{jackett.Lostfilm.host}/", proxy: proxy, cookie: cookie);
                                     if (BencodeTo.Magnet(torrent) != null)
                                         return torrent;
@@ -154,6 +167,43 @@ namespace JacRed.Controllers
             catch (Exception ex) { Console.WriteLine($"JacRed/lostfilm getTorrent: {ex.Message}"); }
 
             return null;
+        }
+
+        // Why (FH-15): host allow-list for URLs scraped out of Lostfilm responses. Accepts the
+        // configured Lostfilm host, any subdomain of its registrable domain (e.g. tracktor.lostfilm.tv),
+        // and the known tracktor.in CDN used by Lostfilm. Everything else is rejected before we
+        // attach the session cookie to a second-hop request.
+        static bool isLostfilmHost(string absoluteUrl)
+        {
+            if (string.IsNullOrWhiteSpace(absoluteUrl))
+                return false;
+
+            if (!Uri.TryCreate(absoluteUrl, UriKind.Absolute, out var uri))
+                return false;
+
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = uri.Host.ToLowerInvariant();
+
+            if (host == "tracktor.in" || host.EndsWith(".tracktor.in"))
+                return true;
+
+            string configured = jackett.Lostfilm.host ?? string.Empty;
+            if (!Uri.TryCreate(configured, UriKind.Absolute, out var cfg))
+                return false;
+
+            string cfgHost = cfg.Host.ToLowerInvariant();
+            if (host == cfgHost)
+                return true;
+
+            // Derive the registrable domain (last two labels) and allow same-family subdomains.
+            string[] parts = cfgHost.Split('.');
+            if (parts.Length < 2)
+                return false;
+
+            string family = parts[parts.Length - 2] + "." + parts[parts.Length - 1];
+            return host == family || host.EndsWith("." + family);
         }
         #endregion
 
@@ -216,7 +266,8 @@ namespace JacRed.Controllers
                     }
                 }
             }
-            catch (Exception ex) { Console.WriteLine($"JacRed/lostfilm getCookie: {ex.Message}"); }
+            // Why (FL-16): type only — never the raw ex.Message (may leak URLs/creds to logs).
+            catch (Exception ex) { Console.WriteLine($"JacRed/lostfilm getCookie: {ex.GetType().Name}"); }
 
             return null;
         }

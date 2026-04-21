@@ -146,8 +146,7 @@ namespace Lampac.Engine.Middlewares
                 {
                     string dnskey = $"tmdb/api:dns:{init.DNS}";
 
-                    var _spredns = new SemaphorManager(dnskey, ctsHttp.Token);
-
+                    using var _spredns = new SemaphorManager(dnskey, ctsHttp.Token);
                     try
                     {
                         await _spredns.WaitAsync();
@@ -168,10 +167,6 @@ namespace Lampac.Engine.Middlewares
                             tmdb_ip = dns_ip;
                     }
                     catch { }
-                    finally
-                    {
-                        _spredns.Release();
-                    }
                 }
                 #endregion
 
@@ -280,8 +275,7 @@ namespace Lampac.Engine.Middlewares
                 {
                     string dnskey = $"tmdb/img:dns:{init.DNS}";
 
-                    var _spredns = new SemaphorManager(dnskey, ctsHttp.Token);
-
+                    using var _spredns = new SemaphorManager(dnskey, ctsHttp.Token);
                     try
                     {
                         await _spredns.WaitAsync();
@@ -302,10 +296,6 @@ namespace Lampac.Engine.Middlewares
                             tmdb_ip = dns_ip;
                     }
                     catch { }
-                    finally
-                    {
-                        _spredns.Release();
-                    }
                 }
                 #endregion
 
@@ -332,7 +322,7 @@ namespace Lampac.Engine.Middlewares
                     ? new ProxyManager("tmdb_img", init) 
                     : null;
 
-                var semaphore = cacheimg ? new SemaphorManager(outFile, ctsHttp.Token) : null;
+                using var semaphore = cacheimg ? new SemaphorManager(outFile, ctsHttp.Token) : null;
 
                 try
                 {
@@ -449,11 +439,6 @@ namespace Lampac.Engine.Middlewares
                         httpContex.Response.Redirect(uri.Replace(tmdb_ip, "image.tmdb.org"));
                     else
                         httpContex.Response.Redirect(uri);
-                }
-                finally
-                {
-                    if (semaphore != null)
-                        semaphore.Release();
                 }
             }
         }

@@ -124,6 +124,13 @@ namespace Online.Controllers
                 res.path = item.Value<string>("path");
                 res.type = item.Value<string>("type");
 
+                // The path value is under the upstream's control; without a host check
+                // it is an SSRF primitive (169.254.169.254/, internal admin UIs, etc.).
+                // Constrain it to the adapter's configured iframevideo hosts before
+                // dereferencing server-side.
+                if (!IsAllowedUpstreamUri(res.path))
+                    return (null, null, 0, null);
+
                 res.content = await Http.Get(res.path, timeoutSeconds: 8, proxy: proxy, headers: httpHeaders(init, HeadersModel.Init(
                     ("DNT", "1"),
                     ("Referer", $"{init.host}/"),
@@ -146,6 +153,35 @@ namespace Online.Controllers
             }
 
             return res;
+        }
+        #endregion
+
+
+        #region IsAllowedUpstreamUri
+        bool IsAllowedUpstreamUri(string uri)
+        {
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out Uri parsed))
+                return false;
+
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            string host = parsed.Host;
+            foreach (string configured in new[] { init?.host, init?.apihost, init?.cdnhost })
+            {
+                if (string.IsNullOrEmpty(configured))
+                    continue;
+
+                if (!Uri.TryCreate(configured, UriKind.Absolute, out Uri configuredUri))
+                    continue;
+
+                string allowedHost = configuredUri.Host;
+                if (host.Equals(allowedHost, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowedHost, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
         #endregion
     }

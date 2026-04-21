@@ -6,6 +6,20 @@
 # Local agent / tool working directories
 .claude/
 
+# Lampac runtime secrets / state (never commit these)
+init.conf
+sync.conf
+passwd
+module/TorrServer.conf
+module/manifest.json
+cache/
+database/
+merchant/invoice/
+merchant/log/
+merchant/users.txt
+.install-secrets
+backups/
+
 # User-specific files
 *.rsuser
 *.suo

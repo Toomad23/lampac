@@ -11,6 +11,19 @@
 # Re-run the script at any time to update the image or rotate settings.
 
 set -euo pipefail
+umask 077
+
+# ───── Tmp files tracked for cleanup (see trap below) ─────
+INIT_TMP=""
+MAN_TMP=""
+TS_TMP=""
+CMP_TMP=""
+SECRETS_TMP=""
+DOCKER_INSTALLER_TMP=""
+cleanup_tmp() {
+  rm -f "$INIT_TMP" "$MAN_TMP" "$TS_TMP" "$CMP_TMP" "$SECRETS_TMP" "$DOCKER_INSTALLER_TMP" 2>/dev/null || true
+}
+trap cleanup_tmp EXIT INT TERM
 
 # ───── Defaults (overridable by flags or env) ─────
 INSTALL_DIR="${INSTALL_DIR:-/opt/lampac}"
@@ -98,18 +111,107 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ───── Input validators ─────
+validate_port() {
+  local p="$1"
+  [[ "$p" =~ ^[0-9]+$ ]] || die "PORT must be numeric (got: '$p')."
+  if (( p < 1 || p > 65535 )); then
+    die "PORT must be between 1 and 65535 (got: $p)."
+  fi
+}
+
+validate_install_dir() {
+  local d="$1"
+  [[ -n "$d" ]] || die "Install dir cannot be empty."
+  if [[ "$d" == *:* ]]; then
+    die "Install dir must not contain ':' (clashes with Docker volume syntax): $d"
+  fi
+}
+
+validate_email() {
+  local e="$1"
+  if [[ ! "$e" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+    die "Invalid admin email: '$e' (reject quotes/backslashes/spaces)."
+  fi
+}
+
+validate_password() {
+  local p="$1" label="${2:-password}"
+  if [[ ${#p} -lt 8 ]]; then
+    die "$label must be at least 8 characters (got ${#p})."
+  fi
+}
+
 # ───── Prerequisites ─────
 command -v curl >/dev/null 2>&1 || die "curl is required"
+
+install_docker_fallback_get_docker_com() {
+  warn "Falling back to https://get.docker.com installer."
+  warn "NOTE: get.docker.com is an unpinned upstream script. Verify integrity before running in production."
+  DOCKER_INSTALLER_TMP=$(mktemp)
+  if ! curl -fsSL https://get.docker.com -o "$DOCKER_INSTALLER_TMP"; then
+    die "Failed to download get.docker.com installer."
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    local sum
+    sum=$(sha256sum "$DOCKER_INSTALLER_TMP" | awk '{print $1}')
+    warn "Downloaded installer sha256: $sum"
+    warn "Compare with the value published by Docker before trusting this host."
+  fi
+  sh "$DOCKER_INSTALLER_TMP"
+  rm -f "$DOCKER_INSTALLER_TMP" || true
+  DOCKER_INSTALLER_TMP=""
+}
+
+install_docker() {
+  local distro_id=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    distro_id=$(. /etc/os-release; echo "${ID:-}")
+  fi
+  case "$distro_id" in
+    debian|ubuntu|linuxmint|raspbian)
+      info "Attempting distro package install: apt-get install docker.io"
+      if command -v sudo >/dev/null 2>&1; then
+        if sudo apt-get update && sudo apt-get install -y docker.io; then
+          return 0
+        fi
+      elif [[ $EUID -eq 0 ]]; then
+        if apt-get update && apt-get install -y docker.io; then
+          return 0
+        fi
+      fi
+      warn "Distro install failed."
+      ;;
+    fedora|rhel|centos|rocky|almalinux)
+      info "Attempting distro package install: dnf install docker"
+      if command -v sudo >/dev/null 2>&1; then
+        if sudo dnf install -y docker; then
+          return 0
+        fi
+      elif [[ $EUID -eq 0 ]]; then
+        if dnf install -y docker; then
+          return 0
+        fi
+      fi
+      warn "Distro install failed."
+      ;;
+    *)
+      warn "No distro-package path known for ID='${distro_id}'."
+      ;;
+  esac
+  install_docker_fallback_get_docker_com
+}
 
 if ! command -v docker >/dev/null 2>&1; then
   warn "Docker is not installed."
   if [[ "$ASSUME_YES" == "true" ]]; then
-    info "Installing Docker via get.docker.com…"
-    curl -fsSL https://get.docker.com | sh
+    info "Installing Docker (distro package preferred)…"
+    install_docker
   else
-    read -r -p "Install Docker via get.docker.com? [Y/n] " a
+    read -r -p "Install Docker (distro package preferred, falls back to get.docker.com)? [Y/n] " a
     if [[ -z "$a" || "$a" =~ ^[Yy]$ ]]; then
-      curl -fsSL https://get.docker.com | sh
+      install_docker
     else
       die "Docker is required. Aborting."
     fi
@@ -127,12 +229,6 @@ if ! docker info >/dev/null 2>&1; then
   else
     die "Cannot run 'docker'. Add your user to the 'docker' group or run this script as root."
   fi
-fi
-
-SUDO=""
-if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
-  if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else die "Cannot create $INSTALL_DIR"; fi
-  $SUDO mkdir -p "$INSTALL_DIR"
 fi
 
 # ───── Interactive gathering ─────
@@ -180,7 +276,8 @@ fi
 
 if [[ "$ENABLE_TS" == "true" && -z "$TS_PASSWD" ]]; then
   if command -v openssl >/dev/null 2>&1; then
-    TS_PASSWD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+    # Pull 24 bytes of base64 then filter non-alphanum — yields ≥20 safe chars
+    TS_PASSWD=$(openssl rand -base64 24 | tr -d '/+=\n' | head -c 20)
   else
     TS_PASSWD=$(head -c 128 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 20)
   fi
@@ -194,18 +291,57 @@ if [[ "$ENABLE_ACCSDB" == "true" && -z "$ADMIN_EMAIL" ]]; then
   die "--admin-email is required when accsdb is enabled."
 fi
 
+# ───── Validate all inputs (after defaults/flags/interactive) ─────
+validate_port "$PORT"
+validate_install_dir "$INSTALL_DIR"
+if command -v realpath >/dev/null 2>&1; then
+  INSTALL_DIR="$(realpath -m "$INSTALL_DIR")"
+fi
+validate_install_dir "$INSTALL_DIR"
+if [[ "$ENABLE_ACCSDB" == "true" ]]; then
+  validate_email "$ADMIN_EMAIL"
+fi
+if [[ "$ENABLE_TS" == "true" ]]; then
+  validate_password "$TS_PASSWD" "TorrServer password"
+fi
+
+# Resolve sudo for file ops now that we have final INSTALL_DIR
+SUDO=""
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+  if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else die "Cannot create $INSTALL_DIR"; fi
+  $SUDO mkdir -p "$INSTALL_DIR"
+fi
+
 # ───── Write files ─────
 info "Preparing ${INSTALL_DIR}…"
 $SUDO mkdir -p "$INSTALL_DIR/module" "$INSTALL_DIR/dlna"
 
-# Backup existing configs
+# Backup existing configs to a dedicated mode-700 backups/ dir (not alongside live config)
+BACKUP_DIR="$INSTALL_DIR/backups"
+$SUDO mkdir -p "$BACKUP_DIR"
+$SUDO chmod 700 "$BACKUP_DIR"
+if [[ $EUID -eq 0 ]] || [[ -n "$SUDO" ]]; then
+  $SUDO chown root:root "$BACKUP_DIR" 2>/dev/null || true
+fi
+BACKUP_TS="$(date +%s)"
 for f in init.conf module/manifest.json module/TorrServer.conf; do
   if [[ -f "$INSTALL_DIR/$f" ]]; then
-    $SUDO cp -p "$INSTALL_DIR/$f" "$INSTALL_DIR/$f.bak.$(date +%s)"
+    base="$(basename "$f")"
+    $SUDO cp -p "$INSTALL_DIR/$f" "$BACKUP_DIR/${base}.${BACKUP_TS}.bak"
   fi
 done
 
-# init.conf
+# Helper: install a staged tmp file to its target with mode, and root:root when possible
+install_config_file() {
+  local src="$1" dst="$2" mode="$3"
+  $SUDO mv "$src" "$dst"
+  $SUDO chmod "$mode" "$dst"
+  if [[ $EUID -eq 0 ]] || [[ -n "$SUDO" ]]; then
+    $SUDO chown root:root "$dst" 2>/dev/null || true
+  fi
+}
+
+# init.conf (640 — may contain accsdb accounts)
 INIT_TMP=$(mktemp)
 if [[ "$ENABLE_ACCSDB" == "true" ]]; then
   cat > "$INIT_TMP" <<EOF
@@ -230,11 +366,11 @@ else
 }
 EOF
 fi
-$SUDO mv "$INIT_TMP" "$INSTALL_DIR/init.conf"
-$SUDO chmod 644 "$INSTALL_DIR/init.conf"
+install_config_file "$INIT_TMP" "$INSTALL_DIR/init.conf" 640
+INIT_TMP=""
 ok "init.conf written"
 
-# manifest.json
+# manifest.json (644 — non-sensitive)
 MAN_TMP=$(mktemp)
 cat > "$MAN_TMP" <<EOF
 [
@@ -247,11 +383,11 @@ cat > "$MAN_TMP" <<EOF
   { "enable": true,         "dll": "Tracks.dll",    "initspace": "Tracks.ModInit" }
 ]
 EOF
-$SUDO mv "$MAN_TMP" "$INSTALL_DIR/module/manifest.json"
-$SUDO chmod 644 "$INSTALL_DIR/module/manifest.json"
+install_config_file "$MAN_TMP" "$INSTALL_DIR/module/manifest.json" 644
+MAN_TMP=""
 ok "module/manifest.json written"
 
-# TorrServer.conf
+# TorrServer.conf (600 — contains defaultPasswd)
 if [[ "$ENABLE_TS" == "true" ]]; then
   TS_TMP=$(mktemp)
   cat > "$TS_TMP" <<EOF
@@ -259,12 +395,12 @@ if [[ "$ENABLE_TS" == "true" ]]; then
   "defaultPasswd": "$TS_PASSWD"
 }
 EOF
-  $SUDO mv "$TS_TMP" "$INSTALL_DIR/module/TorrServer.conf"
-  $SUDO chmod 640 "$INSTALL_DIR/module/TorrServer.conf"
+  install_config_file "$TS_TMP" "$INSTALL_DIR/module/TorrServer.conf" 600
+  TS_TMP=""
   ok "module/TorrServer.conf written"
 fi
 
-# docker-compose.yml (for reference / future edits)
+# docker-compose.yml (644 — references only, no secrets inline)
 CMP_TMP=$(mktemp)
 MOUNT_TS=""
 [[ "$ENABLE_TS" == "true" ]] && MOUNT_TS="      - $INSTALL_DIR/module/TorrServer.conf:/home/module/TorrServer.conf:rw
@@ -281,8 +417,26 @@ services:
       - $INSTALL_DIR/module/manifest.json:/home/module/manifest.json:rw
 ${MOUNT_TS}      - $INSTALL_DIR/dlna:/home/dlna:rw
 EOF
-$SUDO mv "$CMP_TMP" "$INSTALL_DIR/docker-compose.yml"
-$SUDO chmod 644 "$INSTALL_DIR/docker-compose.yml"
+install_config_file "$CMP_TMP" "$INSTALL_DIR/docker-compose.yml" 644
+CMP_TMP=""
+
+# Secrets stash (readable only by root) — password-recovery for unattended installs
+if [[ "$ENABLE_TS" == "true" ]]; then
+  SECRETS_FILE="$INSTALL_DIR/.install-secrets"
+  SECRETS_TMP=$(mktemp)
+  {
+    echo "# Lampac install secrets — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# Mode 600, readable by root only. Rotate and delete when copied."
+    echo "TS_PASSWD=$TS_PASSWD"
+    [[ "$ENABLE_ACCSDB" == "true" ]] && echo "ADMIN_EMAIL=$ADMIN_EMAIL"
+  } > "$SECRETS_TMP"
+  $SUDO mv "$SECRETS_TMP" "$SECRETS_FILE"
+  SECRETS_TMP=""
+  $SUDO chmod 600 "$SECRETS_FILE"
+  if [[ $EUID -eq 0 ]] || [[ -n "$SUDO" ]]; then
+    $SUDO chown root:root "$SECRETS_FILE" 2>/dev/null || true
+  fi
+fi
 
 # ───── Pull image, (re)create container ─────
 info "Pulling ${IMAGE}…"
@@ -344,8 +498,17 @@ if [[ "$ENABLE_TS" == "true" ]]; then
   else
     echo "    Login:    (any non-empty string — accsdb is off)"
   fi
-  echo "    Password: ${BOLD}${TS_PASSWD}${RST}"
-  [[ -n "${GENERATED_PASSWD:-}" ]] && echo "    ${YLW}(auto-generated — save it now)${RST}"
+  # Only echo password when it was auto-generated AND stdin is a TTY.
+  # Otherwise: point operator at the root-readable secrets / config files.
+  if [[ -n "${GENERATED_PASSWD:-}" && -t 0 ]]; then
+    echo "    Password: ${BOLD}${TS_PASSWD}${RST}"
+    echo "    ${YLW}(auto-generated — save it now)${RST}"
+  else
+    echo "    Password: ${YLW}not printed${RST}"
+    echo "    TorrServer password written to ${INSTALL_DIR}/module/TorrServer.conf"
+    echo "    Read it with: ${CYN}sudo cat ${INSTALL_DIR}/module/TorrServer.conf${RST}"
+    echo "    (also saved to ${INSTALL_DIR}/.install-secrets — mode 600)"
+  fi
 fi
 echo
 echo "  Config directory:  ${INSTALL_DIR}"

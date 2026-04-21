@@ -60,7 +60,11 @@ namespace TorrServer
 
         public bool rdb { get; set; }
 
-        public string defaultPasswd { get; set; } = "ts";
+        // Why: the previous hardcoded default ("ts") meant every fresh-install Lampac that had not
+        // explicitly overridden TorrServerConf.defaultPasswd was pre-authenticated with a well-known
+        // password. Leave null and fail-closed in the /ts auth path (TorrServerController) when it is
+        // unset or weak.
+        public string defaultPasswd { get; set; }
 
         public int group { get; set; }
 

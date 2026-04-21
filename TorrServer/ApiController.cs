@@ -21,6 +21,9 @@ namespace TorrServer.Controllers
 {
     public class TorrServerController : BaseController
     {
+        // Why: one-shot warning per process when defaultPasswd is unset/weak so logs aren't spammed.
+        static bool _warnedNoPasswd;
+
         #region ts.js
         [HttpGet]
         [AllowAnonymous]
@@ -114,6 +117,18 @@ namespace TorrServer.Controllers
 
             if (AppInit.conf.accsdb.enable)
             {
+                // Why: fail-closed when no/weak defaultPasswd is configured. Without this check, a
+                // fresh install with the former "ts" default (or any empty/short password) accepted
+                // Basic auth from anyone who could enumerate users. Gated behind accsdb.enable since
+                // unauthenticated deployments intentionally bypass /ts auth below.
+                string tsPasswd = ModInit.conf?.defaultPasswd;
+                bool tsAuthDisabled = string.IsNullOrEmpty(tsPasswd) || tsPasswd.Length < 8;
+                if (tsAuthDisabled && !_warnedNoPasswd)
+                {
+                    _warnedNoPasswd = true;
+                    Console.WriteLine("[TorrServer] defaultPasswd is not set or shorter than 8 chars — /ts auth disabled. Set TorrServerConf.defaultPasswd in init.conf.");
+                }
+
                 #region Обработка stream потока
                 if (HttpContext.Request.Method == "GET" && Regex.IsMatch(HttpContext.Request.Path.Value, "^/ts/(stream|play)"))
                 {
@@ -170,8 +185,8 @@ namespace TorrServer.Controllers
                         passwd = null;
                     }
 
-                    if (login != null && passwd != null &&
-                        AppInit.conf.accsdb.findUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && passwd == ModInit.conf.defaultPasswd)
+                    if (login != null && passwd != null && !tsAuthDisabled &&
+                        AppInit.conf.accsdb.findUser(login) is AccsUser user && !user.ban && user.expires > DateTime.UtcNow && CrypTo.FixedTimeEquals(passwd, tsPasswd))
                     {
                         if (ModInit.conf.group > user.group)
                         {

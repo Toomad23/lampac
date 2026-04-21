@@ -2,6 +2,7 @@ using Shared;
 using Shared.Engine;
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,20 +32,20 @@ namespace Lampac.Engine.CRON
                 if (!AppInit.conf.pirate_store)
                     return;
 
-                // Why: M-1 — all HTTPS origins are preferred. For each origin we probed above we
-                // switched http:// -> https:// where the origin actually serves TLS, and left
-                // http:// only for endpoints that cannot (IP-only hosts with no valid cert).
+                // Why: M-1 — all HTTPS origins are preferred. HTTP-only origins are now rejected
+                // inside update() so a MITM on those two endpoints cannot inject JS into wwwroot.
                 await update("https://immisterio.github.io/bwa/fx.js");
                 await update("https://adultjs.onrender.com", path: "adult.js");
                 await update("https://nb557.github.io/plugins/online_mod.js");
-                await update("https://github.freebie.tom.ru/want.js"); // Why: M-1 — switched to HTTPS (origin serves valid TLS).
+                await update("https://github.freebie.tom.ru/want.js");
                 await update("https://nb557.github.io/plugins/reset_subs.js");
-                // Why: M-1 — 193.233.134.21 is an IP-only host without a valid HTTPS cert; kept HTTP but payload is validated by update() below.
+                // TODO: 193.233.134.21 is an IP-only origin without a valid TLS cert; skipped fail-closed
+                // until the upstream supports HTTPS or publishes a pinnable sha256. Safer to miss an
+                // update than to run attacker-controlled JS in the Lampa UI.
                 await update("http://193.233.134.21/plugins/mult.js");
                 await update("https://nemiroff.github.io/lampa/select_weapon.js");
                 await update("https://nb557.github.io/plugins/not_mobile.js");
-                await update("https://cub.red/plugin/etor", path: "etor.js"); // Why: M-1 — switched to HTTPS (origin serves valid TLS).
-                // Why: M-1 — same IP-only origin as mult.js; kept HTTP, relies on content validation in update().
+                await update("https://cub.red/plugin/etor", path: "etor.js");
                 await update("http://193.233.134.21/plugins/checker.js");
                 await update("https://plugin.rootu.top/ts-preload.js");
                 await update("https://lampame.github.io/main/pubtorr/pubtorr.js");
@@ -64,10 +65,20 @@ namespace Lampac.Engine.CRON
         }
 
 
-        async static Task update(string url, string checkcode = "Lampa.", string path = null)
+        async static Task update(string url, string checkcode = "Lampa.", string path = null, string sha256 = null)
         {
             try
             {
+                // Why: fail-closed for HTTP origins. A MITM on the operator's uplink could swap the
+                // fetched JS for arbitrary code that executes in every user's Lampa UI. Unless the
+                // caller provides an out-of-band sha256 pin (which we verify below), skip the fetch
+                // entirely rather than overwrite wwwroot/plugins/*.js from a plaintext channel.
+                if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(sha256))
+                {
+                    Console.WriteLine($"PluginsCron: skipped insecure HTTP source without sha256 pin: {url}");
+                    return;
+                }
+
                 await Http.GetSpan(js =>
                 {
                     // Why: M-1 — strict validation before overwriting wwwroot/plugins/*.js.
@@ -75,6 +86,28 @@ namespace Lampac.Engine.CRON
                     // oversized payloads on top of the original Lampa. marker check.
                     if (!IsValidPluginPayload(js, checkcode))
                         return;
+
+                    // Why: optional content pinning. When the caller supplies an expected sha256,
+                    // refuse to write the file on mismatch — this protects HTTP origins and also
+                    // catches a compromised HTTPS CDN.
+                    if (!string.IsNullOrEmpty(sha256))
+                    {
+                        byte[] bodyBytes = Encoding.UTF8.GetBytes(js.ToString());
+                        byte[] hash = SHA256.HashData(bodyBytes);
+                        string actual = Convert.ToHexString(hash);
+                        if (!string.Equals(actual, sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"PluginsCron: sha256 mismatch for {url} (expected {sha256}, got {actual})");
+                            return;
+                        }
+                    }
+                    else if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Defence in depth: we already rejected the HTTP path above, but if somebody
+                        // bypasses it in the future, log rather than silently accept.
+                        Console.WriteLine($"PluginsCron: refusing unpinned HTTP payload from {url}");
+                        return;
+                    }
 
                     if (path == null)
                         path = Path.GetFileName(url);

@@ -45,10 +45,10 @@ namespace Merchant.Controllers
             // victim's account. Bind invoice to the authenticated uid only.
             string authUid = requestInfo?.user_uid;
             if (string.IsNullOrWhiteSpace(authUid))
-                return Content("unauthorized");
+                return StatusCode(401, "unauthorized");
 
             if (!string.Equals(authUid.Trim(), email.Trim(), StringComparison.OrdinalIgnoreCase))
-                return Content("uid mismatch");
+                return StatusCode(403, "uid mismatch");
 
             // Why: M-28 — replace predictable DateTime.ToBinary() transid with a cryptographically
             // random 32-hex-char id so an attacker can't guess/race invoice filenames.

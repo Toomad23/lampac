@@ -51,27 +51,21 @@ namespace Shared
                 (_, existing) => (existing.sem, DateTime.UtcNow.Ticks));
 
             // Opportunistic sweep — bounded by dictionary size.
+            // Why: we intentionally DO NOT Dispose() evicted semaphores. A concurrent caller
+            // that acquired the ref before eviction may still hold Wait/Release on it;
+            // disposing here would throw ObjectDisposedException on their Release(). The GC
+            // reclaims the SemaphoreSlim (managed type) once no references remain.
             long thresholdTicks = DateTime.UtcNow.Add(-_semaphoreLocksTtl).Ticks;
             foreach (var kv in _semaphoreLocks)
             {
                 if (kv.Value.lastUsedTicks < thresholdTicks)
-                {
-                    if (_semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
-                    {
-                        try { kv.Value.sem.Dispose(); } catch { }
-                    }
-                }
+                    _semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value));
             }
 
             if (_semaphoreLocks.Count > _semaphoreLocksMaxEntries)
             {
                 foreach (var kv in _semaphoreLocks.OrderBy(p => p.Value.lastUsedTicks).Take(_semaphoreLocks.Count - _semaphoreLocksMaxEntries))
-                {
-                    if (_semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value)))
-                    {
-                        try { kv.Value.sem.Dispose(); } catch { }
-                    }
-                }
+                    _semaphoreLocks.TryRemove(new KeyValuePair<string, (SemaphoreSlim, long)>(kv.Key, kv.Value));
             }
 
             return entry.sem;

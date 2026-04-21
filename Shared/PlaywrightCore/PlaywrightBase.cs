@@ -181,7 +181,7 @@ namespace Shared.PlaywrightCore
         #endregion
 
         #region DownloadFile
-        async public static Task<bool> DownloadFile(string uri, string outfile, string folder = null)
+        async public static Task<bool> DownloadFile(string uri, string outfile, string folder = null, int timeoutSeconds = 300)
         {
             if (File.Exists($"{outfile}.ok"))
                 return true;
@@ -193,7 +193,7 @@ namespace Shared.PlaywrightCore
 
             Console.WriteLine($"Playwright: Download {outfile}");
 
-            if (await Http.DownloadFile(uri, outfile))
+            if (await Http.DownloadFile(uri, outfile, timeoutSeconds))
             {
                 // Why (HIGH-9, supply-chain): every Node/package.zip we download from
                 // the third-party lampac-talks release bucket is executed (node is the

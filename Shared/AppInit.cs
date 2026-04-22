@@ -1446,6 +1446,29 @@ namespace Shared
                 ("referer", "https://aniboom.one/")
             ).ToDictionary()
         };
+
+        // Ported from lampac-nextgen: https://animeon.club (Ukrainian, Ashdi-backed).
+        public OnlinesSettings AnimeON { get; set; } = new OnlinesSettings("AnimeON", "kwwsv=22dqlphrq1foxe", rch_access: "apk,cors", stream_access: "apk,cors", enable: false)
+        {
+            displayindex = 145,
+            rchstreamproxy = "web",
+            geo_hide = ["RU", "BY"]
+        };
+
+        // Ported from lampac-nextgen: https://dreamerscast.com (Ukrainian).
+        public OnlinesSettings Dreamerscast { get; set; } = new OnlinesSettings("Dreamerscast", "kwwsv=22guhdphuvfdvw1frp", rch_access: "apk", stream_access: "apk,cors", enable: false)
+        {
+            displayindex = 130,
+            rchstreamproxy = "web"
+        };
+
+        // Ported from lampac-nextgen: https://api.mikai.me (Ukrainian, Ashdi-backed).
+        public OnlinesSettings Mikai { get; set; } = new OnlinesSettings("Mikai", "kwwsv=22dsl1plndl1ph", rch_access: "apk,cors", stream_access: "apk,cors", enable: false)
+        {
+            displayindex = 150,
+            rchstreamproxy = "web",
+            geo_hide = ["RU", "BY"]
+        };
         #endregion
     }
 }

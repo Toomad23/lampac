@@ -562,6 +562,9 @@ namespace Online.Controllers
                 send(AppInit.conf.Animebesst);
                 send(AppInit.conf.MoonAnime);
                 send(AppInit.conf.AnimeGo);
+                send(AppInit.conf.AnimeON);
+                send(AppInit.conf.Dreamerscast);
+                send(AppInit.conf.Mikai);
             }
 
             send(AppInit.conf.Filmix);
@@ -849,6 +852,9 @@ namespace Online.Controllers
                 send(conf.AnimeGo);
                 send(conf.AniMedia);
                 send(conf.MoonAnime);
+                send(conf.AnimeON);
+                send(conf.Dreamerscast);
+                send(conf.Mikai);
             }
 
             #region VoKino
@@ -1311,6 +1317,9 @@ namespace Online.Controllers
                             case "fancdn":
                             case "cdnvideohub":
                             case "moonanime":
+                            case "animeon":
+                            case "dreamerscast":
+                            case "mikai":
                             case "playembed":
                             case "rgshows":
                             case "twoembed":

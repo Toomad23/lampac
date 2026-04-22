@@ -34,6 +34,18 @@ namespace TorrServer.Controllers
         {
             string file = FileCache.ReadAllText("plugins/ts.js").Replace("{localhost}", Regex.Replace(host, "^https?://", ""));
 
+            // Why: operator opt-out for server→client settings push. When syncClientCreds=false
+            // we strip both Storage.set calls entirely so Lampa never writes torrserver_password /
+            // torrserver_login into its local Storage from this endpoint. Needed because Android
+            // TV reloads the plugin on every app start and the unconditional Storage.set from
+            // PR #53/#54 clobbers user-entered credentials. Default path below is unchanged.
+            if (ModInit.conf?.syncClientCreds == false)
+            {
+                file = Regex.Replace(file, @"Lampa\.Storage\.set\('torrserver_password'[^\n\r]+\r?\n?", string.Empty);
+                file = Regex.Replace(file, @"Lampa\.Storage\.set\('torrserver_login'[^\n\r]+\r?\n?", string.Empty);
+                return Content(file, "application/javascript; charset=utf-8");
+            }
+
             // Why (round5): upstream ts.js hardcodes `Lampa.Storage.set('torrserver_password','ts')`,
             // which clobbers any user-saved TS password on every plugin reload. After PR #42 made
             // the legacy 'ts' default fail-closed on the server side, this bricked the Lampa Android

@@ -78,6 +78,15 @@ namespace TorrServer
 
         public bool checkfile { get; set; } = true;
 
+        // Why: upstream ts.js contains `Lampa.Storage.set('torrserver_password'|'torrserver_login', ...)`
+        // literals that the client executes on every plugin load. PR #53/#54 leveraged that to
+        // auto-bootstrap TorrServer credentials for the Android Lampa client, but the side effect
+        // is that *any* user-saved values on the client are overwritten server-side on every app
+        // start — especially visible on Android TV where the plugin is not cached between launches.
+        // When this flag is false, Plugin() strips both Storage.set calls so the server stops
+        // dictating client-side TorrServer settings. Default true = legacy behaviour (PR #53/#54).
+        public bool syncClientCreds { get; set; } = true;
+
 
         static (ModInit, DateTime) cacheconf = default;
 

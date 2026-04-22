@@ -982,6 +982,9 @@ namespace Online.Controllers
             if (PlaywrightBrowser.Status != PlaywrightStatus.disabled)
                 send(conf.Mirage);
 
+            if (PlaywrightBrowser.Status != PlaywrightStatus.disabled)
+                send(conf.Spectre);
+
             if (PlaywrightBrowser.Status != PlaywrightStatus.disabled || !string.IsNullOrEmpty(conf.Kinobase.overridehost) || conf.Kinobase.overridehosts?.Length > 0)
                 send(conf.Kinobase);
 

@@ -34,15 +34,24 @@ namespace TorrServer.Controllers
         {
             string file = FileCache.ReadAllText("plugins/ts.js").Replace("{localhost}", Regex.Replace(host, "^https?://", ""));
 
-            // Why: operator opt-out for server→client settings push. When syncClientCreds=false
-            // we strip both Storage.set calls entirely so Lampa never writes torrserver_password /
-            // torrserver_login into its local Storage from this endpoint. Needed because Android
-            // TV reloads the plugin on every app start and the unconditional Storage.set from
-            // PR #53/#54 clobbers user-entered credentials. Default path below is unchanged.
+            // Why: upstream plugins/ts.js never sets Lampa.Manifest.plugins, so the TorrServer
+            // plugin shows as "Без названия" in the Lampa extensions UI. Inject a minimal
+            // manifest (name / version / description) right after the IIFE opens. Done
+            // unconditionally so the UX fix applies on both the default path and the
+            // syncClientCreds=false fast-exit below.
+            file = file.Replace("(function () {",
+                "(function () {\n    try { if (window.Lampa && Lampa.Manifest) Lampa.Manifest.plugins = { type: 'plugin', version: '1.0', name: 'TorrServer', description: 'Интеграция с TorrServer через lampac', author: 'lampac' }; } catch (e) {}");
+
+            // Why: operator opt-out for server→client settings push. PR #63 stripped only
+            // torrserver_password and torrserver_login, but the upstream plugin ALSO writes
+            // torrserver_url and torrserver_auth on every load — so changing the TorrServer
+            // URL on the client (e.g. on Android TV) would still be clobbered on the next
+            // plugin reload. Here we strip every Lampa.Storage.set('torrserver_*', ...) call,
+            // so the server truly stops dictating any client-side TorrServer settings.
+            // Default path below keeps PR #53/#54 behaviour (credential auto-bootstrap).
             if (ModInit.conf?.syncClientCreds == false)
             {
-                file = Regex.Replace(file, @"Lampa\.Storage\.set\('torrserver_password'[^\n\r]+\r?\n?", string.Empty);
-                file = Regex.Replace(file, @"Lampa\.Storage\.set\('torrserver_login'[^\n\r]+\r?\n?", string.Empty);
+                file = Regex.Replace(file, @"Lampa\.Storage\.set\('torrserver_[A-Za-z_]+'[^\n\r]+\r?\n?", string.Empty);
                 return Content(file, "application/javascript; charset=utf-8");
             }
 

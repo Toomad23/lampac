@@ -50,6 +50,13 @@ namespace Tracks.Controllers
 
             var sb = new StringBuilder(FileCache.ReadAllText("plugins/transcoding.js"));
 
+            // Why: upstream plugins/transcoding.js never sets Lampa.Manifest.plugins, so the
+            // plugin shows as "Без названия" in the Lampa extensions UI. Inject a minimal
+            // manifest (name / version / description) right after the IIFE opens so users
+            // see a proper title in their plugin list.
+            sb.Replace("(function () {",
+                "(function () {\n    try { if (window.Lampa && Lampa.Manifest) Lampa.Manifest.plugins = { type: 'plugin', version: '1.0', name: 'Transcoding video', description: 'Транскодирование медиапотоков через lampac/ffmpeg', author: 'lampac' }; } catch (e) {}");
+
             sb.Replace("{localhost}", AppInit.Host(HttpContext))
               .Replace("{token}", HttpUtility.UrlEncode(token));
 

@@ -220,7 +220,7 @@ namespace Online.Controllers
             var streamquality = oninvk.GetStreamQualityTpl(cache.Value);
 
             var first = streamquality.Firts();
-            if (first == null)
+            if (string.IsNullOrEmpty(first.link))
                 return OnError();
 
             if (play)

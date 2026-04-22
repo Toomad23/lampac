@@ -320,8 +320,7 @@ namespace Shared.Engine.Online
                         streamquality.Append(onstreamfile(l.stream_url), l.title);
 
                     var first = streamquality.Firts();
-                    if (first != null)
-                        mtpl.Append(first.quality, onstreamfile(links[0].stream_url), streamquality: streamquality);
+                    mtpl.Append(first.quality, onstreamfile(links[0].stream_url), streamquality: streamquality);
                 }
 
                 return mtpl;

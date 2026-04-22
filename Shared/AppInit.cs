@@ -1271,6 +1271,18 @@ namespace Shared
             headers = Http.defaultFullHeaders
         };
 
+        // Spectre — ported from lampac-nextgen Modules/OnlineRUS/Spectre.
+        // Requires Playwright; disabled by default (enable=false) since it carries
+        // a dedicated WebSocket + anti-bot keep-alive loop that imposes ongoing load.
+        // Operators opt in explicitly via user init.conf.
+        public SpectreSettings Spectre { get; set; } = new SpectreSettings("Spectre", "https://api.apbugall.org", "https://aport-as.allarknow.online", "22c8122334d050de1bfc97bd08aa5e", "", true)
+        {
+            displayindex = 510,
+            streamproxy = true,
+            httpversion = 2,
+            headers = Http.defaultFullHeaders
+        };
+
         public OnlinesSettings GetsTV { get; set; } = new OnlinesSettings("GetsTV", "https://getstv.com", enable: false, stream_access: "apk,cors,web")
         {
             rhub_safety = false,

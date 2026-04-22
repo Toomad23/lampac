@@ -1148,9 +1148,50 @@ namespace Shared
             rchstreamproxy = "web"
         };
 
+        // Ported from lampac-nextgen RUS balancers. All four default to `enable = false` so existing
+        // deployments don't start scraping new hosts on upgrade; operators opt in via config.json.
+
+        /// <summary>
+        /// PizdatoeHD — Playwright-driven rezka.ag variant. Needs Playwright or priorityBrowser="http".
+        /// Custom settings class carries `premium` (quality ladder), `imitationHuman`, `cdn` (stream host rewrite).
+        /// aHR0cHM6Ly9yZXprYS5hZy8=
+        /// </summary>
+        public PizdatoeHDSettings PizdatoeHD { get; set; } = new PizdatoeHDSettings("PizdatoeHD", "kwwsv=22uh}nd1dj", enable: false)
+        {
+            imitationHuman = true,
+            hls = true,
+            headers = HeadersModel.Init(Http.defaultFullHeaders).ToDictionary()
+        };
+
+        /// <summary>
+        /// LeProduction — simple HTTP balancer, scrapes le-production.tv search + iframe.
+        /// aHR0cHM6Ly9sZS1wcm9kdWN0aW9uLnR2Lw==
+        /// </summary>
+        public OnlinesSettings LeProduction { get; set; } = new OnlinesSettings("LeProduction", "kwwsv=22oh0surgxfwlrq1wy", streamproxy: true, enable: false);
+
+        /// <summary>
+        /// FlixCDN — JSON catalogue at {apihost}/search + iframe playback. Requires operator-supplied token.
+        /// apihost: aHR0cHM6Ly9hcGkuZmxpeGNkbi50b3A=
+        /// </summary>
+        public OnlinesSettings FlixCDN { get; set; } = new OnlinesSettings("FlixCDN", "kwwsv=22iol{fgq1wrs", "kwwsv=22dsl1iol{fgq1wrs", token: "", streamproxy: true, enable: false);
+
+        /// <summary>
+        /// ZetflixDB — sibling of VideoDB using zetflix embed path; reuses VideoDB manifest endpoint for playback.
+        /// apihost: aHR0cHM6Ly9nby56ZXQtZmxpeC5vbmxpbmU=
+        /// </summary>
+        public OnlinesSettings ZetflixDB { get; set; } = new OnlinesSettings("ZetflixDB", "kwwsv=22nlqrjr1phgld", "kwwsv=22jr1}hw0iol{1rqolqh", streamproxy: true, rch_access: "apk", stream_access: "apk,cors,web", enable: false)
+        {
+            httpversion = 2,
+            priorityBrowser = "http",
+            headers = HeadersModel.Init(Http.defaultFullHeaders,
+                ("sec-fetch-storage-access", "active"),
+                ("upgrade-insecure-requests", "1")
+            ).ToDictionary()
+        };
+
         /// <summary>
         /// Получение учетной записи
-        /// 
+        ///
         /// tg: @monk_in_a_hat
         /// email: helpdesk@lumex.ink
         /// </summary>

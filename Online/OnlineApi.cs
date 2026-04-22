@@ -1008,6 +1008,23 @@ namespace Online.Controllers
             if (PlaywrightBrowser.Status != PlaywrightStatus.disabled || !string.IsNullOrEmpty(conf.Kinogo.overridehost) || conf.Kinogo.overridehosts?.Length > 0)
                 send(conf.Kinogo);
 
+            // Ported RUS balancers (nextgen): PizdatoeHD is Playwright-driven like Kinogo, so gate
+            // on the same availability check. LeProduction is plain HTTP. FlixCDN needs a token.
+            // ZetflixDB mirrors the VideoDB gate (Playwright OR priorityBrowser=http OR overrides).
+            if (PlaywrightBrowser.Status != PlaywrightStatus.disabled || conf.PizdatoeHD.rhub || conf.PizdatoeHD.priorityBrowser == "http" || !string.IsNullOrEmpty(conf.PizdatoeHD.overridehost) || conf.PizdatoeHD.overridehosts?.Length > 0)
+                send(conf.PizdatoeHD);
+
+            send(conf.LeProduction);
+
+            if (!string.IsNullOrEmpty(conf.FlixCDN.token))
+                send(conf.FlixCDN);
+
+            if (kinopoisk_id > 0)
+            {
+                if (conf.ZetflixDB.rhub || conf.ZetflixDB.priorityBrowser == "http" || PlaywrightBrowser.Status != PlaywrightStatus.disabled || !string.IsNullOrEmpty(conf.ZetflixDB.overridehost) || conf.ZetflixDB.overridehosts?.Length > 0)
+                    send(conf.ZetflixDB);
+            }
+
             if (kinopoisk_id > 0)
                 send(conf.Ashdi, "ashdi", "Ashdi (Украинский)");
 

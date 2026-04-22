@@ -439,7 +439,7 @@ namespace Online.Controllers
                 return OnError("linkhost");
 
             var result = await goMovie(linkhostUri, id_file);
-            if (result.streams == null || result.streams.data.Count == 0 || string.IsNullOrEmpty(result.wsUri))
+            if (result.streams.data == null || result.streams.data.Count == 0 || string.IsNullOrEmpty(result.wsUri))
                 return OnError();
 
             // Start WS only if the handshake URI is public. wsUri comes from a

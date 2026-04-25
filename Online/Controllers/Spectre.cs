@@ -297,7 +297,10 @@ namespace Online.Controllers
 
                         foreach (var episode in frame.all[sArhc])
                         {
-                            foreach (var voice in episode.ToObject<Dictionary<string, JObject>>().Select(i => i.Value))
+                            foreach (var voice in episode
+                                .ToObject<Dictionary<string, JObject>>()
+                                .Select(i => i.Value)
+                                .OrderBy(e => e.Value<int>("episode")))
                             {
                                 if (voice.Value<int>("id_translation") != t)
                                     continue;
@@ -351,7 +354,9 @@ namespace Online.Controllers
                                 }
                                 else if (season.Value is JObject sjob)
                                 {
-                                    foreach (var episode in sjob.ToObject<Dictionary<string, JObject>>())
+                                    foreach (var episode in sjob
+                                        .ToObject<Dictionary<string, JObject>>()
+                                        .OrderBy(e => e.Value.Value<int>("episode")))
                                     {
                                         if (episode.Value.Value<int>("id_translation") != t)
                                             continue;
@@ -393,7 +398,9 @@ namespace Online.Controllers
                         }
                         #endregion
 
-                        foreach (var episode in frame.all[sArhc].ToObject<Dictionary<string, Dictionary<string, JObject>>>())
+                        foreach (var episode in frame.all[sArhc]
+                            .ToObject<Dictionary<string, Dictionary<string, JObject>>>()
+                            .OrderBy(e => int.TryParse(e.Key, out int _e) ? _e : 0))
                         {
                             foreach (var voice in episode.Value.Select(i => i.Value))
                             {

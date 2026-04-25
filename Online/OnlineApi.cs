@@ -1023,7 +1023,8 @@ namespace Online.Controllers
             if (PlaywrightBrowser.Status != PlaywrightStatus.disabled || conf.PizdatoeHD.rhub || conf.PizdatoeHD.priorityBrowser == "http" || !string.IsNullOrEmpty(conf.PizdatoeHD.overridehost) || conf.PizdatoeHD.overridehosts?.Length > 0)
                 send(conf.PizdatoeHD);
 
-            send(conf.LeProduction);
+            if (!isanime)
+                send(conf.LeProduction);
 
             if (!string.IsNullOrEmpty(conf.FlixCDN.token))
                 send(conf.FlixCDN);

@@ -100,6 +100,8 @@ namespace Online.Controllers
                             if (page == null)
                                 return e.Fail("page");
 
+                            await AdsBlockRouteAsync(page);
+
                             var result = await page.GotoAsync(search_uri, new PageGotoOptions()
                             {
                                 WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -189,6 +191,8 @@ namespace Online.Controllers
                                 page = await browser.NewPageAsync(init.plugin, init.headers, proxy: proxy_data, imitationHuman: init.imitationHuman).ConfigureAwait(false);
                                 if (page == null)
                                     return e.Fail("page");
+
+                                await AdsBlockRouteAsync(page);
                             }
 
                             var result = await page.GotoAsync(pageUri, new PageGotoOptions()
@@ -252,6 +256,8 @@ namespace Online.Controllers
                         var page = await browser.NewPageAsync(init.plugin, init.headers, proxy: proxy_data, imitationHuman: init.imitationHuman).ConfigureAwait(false);
                         if (page == null)
                             return result.Fail("page");
+
+                        await AdsBlockRouteAsync(page);
 
                         #region auth cookies
                         if (!string.IsNullOrEmpty(init.cookie))
@@ -402,6 +408,28 @@ namespace Online.Controllers
             {
                 return false;
             }
+        }
+        #endregion
+
+        #region AdsBlockRouteAsync
+        // Ported from lampac-nextgen 94f7b8b. Blocks ad/tracker requests at the
+        // Playwright route layer so they never hit the network. Pattern is
+        // upstream-curated; no SSRF concern (we abort, not redirect).
+        async Task AdsBlockRouteAsync(IPage page)
+        {
+            const string adspattern = "(vk.com|ad2the.net|schulist.link|clarity.ms|frane[a-z]ki.net|cdn.jsdelivr.net/npm/yandex-metrica-watch/tag.js)";
+
+            await page.RouteAsync("**/*", async route =>
+            {
+                try
+                {
+                    if (Regex.IsMatch(route.Request.Url, adspattern, RegexOptions.IgnoreCase))
+                        await route.AbortAsync();
+                    else
+                        await route.ContinueAsync();
+                }
+                catch { }
+            });
         }
         #endregion
     }

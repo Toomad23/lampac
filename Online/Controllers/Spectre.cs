@@ -5,10 +5,8 @@ using Newtonsoft.Json.Linq;
 using Shared.Engine.RxEnumerate;
 using Shared.Engine.Utilities;
 using Shared.Models.Online.Settings;
+using Shared.Models.Online.Spectre;
 using Shared.PlaywrightCore;
-using System.Net.WebSockets;
-using System.Text;
-using System.Threading;
 
 namespace Online.Controllers
 {
@@ -27,6 +25,15 @@ namespace Online.Controllers
     //      `Accepts-Controls`. Without this header segment fetches are blocked.
     //   4. Keep-alive: send "playing" every 30s, reset every 15min of inactivity.
     //
+    // Multi-viewer mux (PR #65, ported from nextgen 480ba7c):
+    //   * State that used to be static (ws / edge_hash / resolution / current_time)
+    //     now lives on a per-viewer WatchMux instance, owned by Online.Controllers.Service.
+    //   * Dispatch key in our fork is the viewer's remote IP (mux=true) or the
+    //     literal "muxoff" (mux=false). We can't use upstream's userdata channel
+    //     because our EventProxyApiCreateHttpRequest record doesn't carry it.
+    //   * Resolution-change handover is intentionally NOT implemented; we record
+    //     the initial resolution from goMovie and never re-emit playback_start.
+    //
     // Security adaptations vs. nextgen:
     //   * Every external host we dereference (apihost, linkhost, wsUri) is
     //     validated via SsrfGuard before use (fail-closed).
@@ -34,117 +41,14 @@ namespace Online.Controllers
     //     cannot be coerced into an open-redirect to RFC1918 targets.
     //   * The Authorizations bearer is a constant upstream credential (not
     //     user-derived), kept verbatim from nextgen — not logged.
-    //   * Our fork's EventProxyApiCreateHttpRequest record does NOT carry a
-    //     `userdata` field (unlike nextgen), so the dynamic resolution handover
-    //     (quality change -> playback_start) cannot key off that channel. We
-    //     preserve the keep-alive + edge_hash injection (the anti-bot core),
-    //     and infer the current segment index from the request URL so that
-    //     seeked / playing events still fire. Resolution changes will simply
-    //     look like a seek to the remote player-telemetry.
     public class Spectre : BaseOnlineController<SpectreSettings>
     {
-        #region WebSocket state (shared across controller instances)
-        // Controllers are transient per request; the WS + edge_hash state must
-        // live on static fields to survive across the redirect hop between
-        // /lite/spectre/video and subsequent proxy-stream segment fetches.
-        static ClientWebSocket ws;
-        static CancellationTokenSource wscts;
-        static DateTime lastreq;
-        static readonly Timer timer;
-        static string edge_hash, resolution, requestOrigin, requestReferer;
-        static int current_time = 0, last_time = 0;
-        static readonly object last_time_lock = new(), resolution_lock = new();
-        static readonly object wsLock = new();
-        #endregion
-
         static Spectre()
         {
-            timer = new Timer(_ =>
-            {
-                if (ws != null && lastreq != default && DateTime.Now.AddMinutes(-15) > lastreq)
-                    ClearConnect();
-            }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(1));
-
-            EventListener.ProxyApiCreateHttpRequest += async e =>
-            {
-                if (e.plugin == null || !e.plugin.Equals("Spectre", StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                // Wait briefly for the WS handshake to deliver edge_hash. If we
-                // never get one, abandon the hook — we don't want to silently
-                // strip Authorizations from unrelated plugins.
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                while (edge_hash == null && sw.Elapsed < TimeSpan.FromSeconds(20))
-                    await Task.Delay(10);
-
-                if (edge_hash == null)
-                    return;
-
-                lastreq = DateTime.Now;
-
-                #region current_time (inferred from segment index in URL)
-                // nextgen keyed this off decryptLink.userdata (per-quality tag);
-                // our fork's event record lacks userdata, so we parse the segment
-                // index from the proxied URL and derive elapsed seconds.
-                string segId = Regex.Match(e.requestMessage.RequestUri?.ToString() ?? string.Empty, "/seg-([0-9]+)-").Groups[1].Value;
-                int seg = int.TryParse(segId, out int s) ? s : 0;
-
-                if (25 >= seg)
-                {
-                    current_time = 0;
-                    last_time = 0;
-                }
-                else
-                {
-                    bool sendSeeked = false;
-
-                    lock (last_time_lock)
-                    {
-                        current_time = (seg - 25) * 6;
-                        if (last_time == 0)
-                            last_time = current_time;
-
-                        if ((current_time - last_time) > 90)
-                            sendSeeked = true;
-
-                        last_time = current_time;
-                    }
-
-                    if (sendSeeked)
-                    {
-                        await WsSendAsync("seeked");
-                        await Task.Delay(1000);
-                    }
-                }
-                #endregion
-
-                #region requestMessage headers (Spectre anti-bot shape)
-                e.requestMessage.Headers.Clear();
-
-                e.requestMessage.Headers.TryAddWithoutValidation("Connection", "keep-alive");
-                e.requestMessage.Headers.TryAddWithoutValidation("sec-ch-ua", Http.defaultUaHeaders["sec-ch-ua"]);
-                e.requestMessage.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
-                e.requestMessage.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"Windows\"");
-                e.requestMessage.Headers.TryAddWithoutValidation("User-Agent", Http.UserAgent);
-                e.requestMessage.Headers.TryAddWithoutValidation("Accept", "*/*");
-                e.requestMessage.Headers.TryAddWithoutValidation("Accept-Language", "ru-RU,ru;q=0.9,uk-UA;q=0.8,uk;q=0.7,en-US;q=0.6,en;q=0.5");
-                e.requestMessage.Headers.TryAddWithoutValidation("Accepts-Controls", edge_hash);
-                // Upstream-constant bearer token; kept verbatim from nextgen. Not
-                // a user secret; never originates from a request parameter.
-                e.requestMessage.Headers.TryAddWithoutValidation("Authorizations", "Bearer pXzvbyDGLYyB6VkwsWZDv3iMKZtsXNzpzRyxZUcsKHXxsSeaYakbo3hw9mBFRc5VQTpqAX6BW8aDEqyLaHYcXSQiV6KHYTVTK6MYRphNAy5sBjtrevqkDzKmLqNdfMZGEU9NELjmtKfZy3RNGzCd767sNh1mXEj4tCcvqndHtzmwAbZNkhm4ghDEasodotMBewypNQ56uotJAQGX11csfeRfBAPk8DcUWWkkqzxca8vbnEw12vUFbBzT6hz8ZB3F3dzUhUXoL2cr1WM1bXQArRCS1MUNMz3X5WDMMQoZKxj2AMTRqp7QQX4dDB9B7VzEZTmyFULhm1AcHHMkoMvSVvKYoBoAKLycYAgMHeD4ECJcGEAGpnkJhrV57zQ7");
-                if (!string.IsNullOrEmpty(requestOrigin))
-                    e.requestMessage.Headers.TryAddWithoutValidation("Origin", requestOrigin);
-                e.requestMessage.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
-                e.requestMessage.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-                e.requestMessage.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
-                if (!string.IsNullOrEmpty(requestReferer))
-                    e.requestMessage.Headers.TryAddWithoutValidation("Referer", requestReferer);
-                e.requestMessage.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br, zstd");
-
-                if (e.requestMessage.Content?.Headers != null)
-                    e.requestMessage.Content.Headers.Clear();
-                #endregion
-            };
+            // Single registration site for the proxy-API hook + idle-sweep
+            // timer. Service owns the watchs dictionary and all WS lifecycle.
+            EventListener.ProxyApiCreateHttpRequest += Service.ProxyApiCreateHttpRequest;
+            Service.Start();
         }
 
         public Spectre() : base(AppInit.conf.Spectre)
@@ -434,8 +338,6 @@ namespace Online.Controllers
             if (await IsRequestBlocked(rch: false))
                 return badInitMsg;
 
-            ClearConnect();
-
             string linkhostUri = $"{init.linkhost}/?token_movie={token_movie}&token={init.token}";
 
             // SSRF gate: linkhost comes from a (runtime-mutable) config value.
@@ -444,6 +346,11 @@ namespace Online.Controllers
             // setup, but we fail-closed if someone points linkhost at RFC1918.
             if (!SsrfGuard.IsAllowedPublicUriBasic(linkhostUri))
                 return OnError("linkhost");
+
+            // streamId must agree with Service.ResolveStreamId so the proxy
+            // hook finds this WatchMux on segment fetches. With mux=false we
+            // collapse all viewers onto a single shared key (pre-mux behaviour).
+            string streamId = init.mux ? (requestInfo?.IP ?? "unknown") : "muxoff";
 
             var result = await goMovie(linkhostUri, id_file);
             if (result.streams.data == null || result.streams.data.Count == 0 || string.IsNullOrEmpty(result.wsUri))
@@ -455,7 +362,9 @@ namespace Online.Controllers
             if (!IsAllowedWebSocketUri(result.wsUri))
                 return OnError("ws uri");
 
-            StartWebSocket(result.wsUri);
+            bool ok = await Service.AddOrUpdate(streamId, result.wsUri, result.watch);
+            if (!ok)
+                return OnError("ws");
 
             var first = result.streams.Firts();
 
@@ -621,11 +530,12 @@ namespace Online.Controllers
         #endregion
 
         #region goMovie
-        async Task<(StreamQualityTpl streams, string wsUri)> goMovie(string uri, long id_file)
+        async Task<(WatchMux watch, StreamQualityTpl streams, string wsUri)> goMovie(string uri, long id_file)
         {
             try
             {
                 string wsUri = null;
+                var watch = new WatchMux();
                 var streamquality = new StreamQualityTpl();
 
                 using (var browser = new PlaywrightBrowser())
@@ -683,8 +593,10 @@ namespace Online.Controllers
                                 }
 
                                 var reqHeaders = route.Request.Headers;
-                                reqHeaders.TryGetValue("referer", out requestReferer);
-                                reqHeaders.TryGetValue("origin", out requestOrigin);
+                                if (reqHeaders.TryGetValue("referer", out string referer))
+                                    watch.requestReferer = referer;
+                                if (reqHeaders.TryGetValue("origin", out string origin))
+                                    watch.requestOrigin = origin;
 
                                 wsUri = jo.Value<string>("pnr") + $"?sid={jo.Value<string>("pnk")}&v=2.1&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
 
@@ -707,8 +619,8 @@ namespace Online.Controllers
                                         if (string.IsNullOrWhiteSpace(link))
                                             continue;
 
-                                        if (string.IsNullOrEmpty(resolution))
-                                            resolution = q.Name;
+                                        if (string.IsNullOrEmpty(watch.resolution))
+                                            watch.resolution = q.Name;
 
                                         link = link
                                             .Split(new[] { " or " }, StringSplitOptions.RemoveEmptyEntries)
@@ -762,7 +674,7 @@ namespace Online.Controllers
                     await browser.WaitPageResult(15);
                 }
 
-                return (streamquality, wsUri);
+                return (watch, streamquality, wsUri);
             }
             catch
             {
@@ -790,148 +702,6 @@ namespace Online.Controllers
 
             var builder = new UriBuilder(parsed) { Scheme = scheme == "wss" ? "https" : "http" };
             return SsrfGuard.IsAllowedPublicUriBasic(builder.Uri.ToString());
-        }
-
-        void StartWebSocket(string wsUri)
-        {
-            lock (wsLock)
-            {
-                try
-                {
-                    if (ws != null)
-                        return;
-
-                    ws = new ClientWebSocket();
-                    ws.Options.SetRequestHeader("User-Agent", Http.UserAgent);
-
-                    wscts = new CancellationTokenSource();
-                }
-                catch { ClearConnect(); return; }
-            }
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await ws.ConnectAsync(new Uri(wsUri), wscts.Token);
-
-                    var receiveBuffer = new byte[16 * 1024];
-
-                    _ = Task.Factory.StartNew(async () =>
-                    {
-                        try
-                        {
-                            while (!wscts.Token.IsCancellationRequested && ws.State == WebSocketState.Open)
-                            {
-                                var result = await ws.ReceiveAsync(new ArraySegment<byte>(receiveBuffer), wscts.Token);
-                                if (wscts.Token.IsCancellationRequested)
-                                    return;
-
-                                if (result.MessageType == WebSocketMessageType.Close)
-                                {
-                                    ClearConnect();
-                                    break;
-                                }
-
-                                string message = Encoding.UTF8.GetString(receiveBuffer, 0, result.Count);
-
-                                string hash = Regex.Match(message ?? string.Empty, "\"edge_hash\":\"([^\"]+)\"").Groups[1].Value;
-                                if (!string.IsNullOrEmpty(hash))
-                                    edge_hash = hash;
-                            }
-                        }
-                        catch { }
-                    }, wscts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-
-                    _ = Task.Factory.StartNew(async () =>
-                    {
-                        while (!wscts.Token.IsCancellationRequested && ws.State == WebSocketState.Open)
-                        {
-                            try
-                            {
-                                await Task.Delay(TimeSpan.FromSeconds(30), wscts.Token);
-                                if (wscts.Token.IsCancellationRequested)
-                                    return;
-
-                                await WsSendAsync("playing");
-                            }
-                            catch { }
-                        }
-                    }, wscts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-
-                    long unixtime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    await WsSendAsync("playback_start", unixtime);
-                    await WsSendAsync("init", unixtime);
-                }
-                catch
-                {
-                    ClearConnect();
-                }
-            });
-        }
-
-        static Task WsSendAsync(string type, long unixtime = 0)
-        {
-            if (ws == null || ws.State != WebSocketState.Open)
-                return Task.CompletedTask;
-
-            if (unixtime == 0)
-                unixtime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            string payload = JsonConvert.SerializeObject(new
-            {
-                type,
-                current_time,
-                resolution,
-                track_id = "1",
-                speed = 1,
-                subtitle = -1,
-                ts = unixtime
-            });
-
-            try
-            {
-                return ws.SendAsync(
-                  new ArraySegment<byte>(Encoding.UTF8.GetBytes(payload)),
-                  WebSocketMessageType.Text,
-                  true,
-                  wscts?.Token ?? CancellationToken.None
-                );
-            }
-            catch
-            {
-                return Task.CompletedTask;
-            }
-        }
-        #endregion
-
-        #region ClearConnect
-        static void ClearConnect()
-        {
-            lock (wsLock)
-            {
-                edge_hash = null;
-                resolution = null;
-                current_time = 0;
-                last_time = 0;
-                lastreq = DateTime.Now;
-
-                try
-                {
-                    wscts?.Cancel();
-                }
-                catch { }
-
-                try
-                {
-                    if (ws != null)
-                        _ = ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                }
-                catch { }
-
-                ws = null;
-                wscts = null;
-            }
         }
         #endregion
     }

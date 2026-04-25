@@ -1321,7 +1321,8 @@ namespace Shared
             displayindex = 510,
             streamproxy = true,
             httpversion = 2,
-            headers = Http.defaultFullHeaders
+            headers = Http.defaultFullHeaders,
+            mux = true
         };
 
         public OnlinesSettings GetsTV { get; set; } = new OnlinesSettings("GetsTV", "https://getstv.com", enable: false, stream_access: "apk,cors,web")

@@ -12,6 +12,13 @@ namespace Shared.Models.Online.Settings
     //   - token     : long-term API token
     //   - secret_token : reserved for future use (kept for parity with AllohaSettings family)
     //   - m4s       : enable 2160p / 1440p (dash-like) streams
+    //   - mux       : multi-viewer dispatch — when true, each viewer gets its own
+    //                 WatchMux (keyed by remote IP); when false, all viewers
+    //                 share a single WatchMux under the literal key "muxoff",
+    //                 which matches the pre-mux behaviour. Default: true.
+    //   - debug     : verbose Console logging from the Spectre Service path
+    //                 (edge_hash arrival, watch lifecycle, seeked / playing
+    //                 events). Default: false.
     //
     // Keeping this as its own type (rather than reusing AllohaSettings like Mirage does)
     // means future Spectre-specific flags can be added without polluting the Alloha shape
@@ -35,6 +42,10 @@ namespace Shared.Models.Online.Settings
         public string linkhost { get; set; }
 
         public bool m4s { get; set; }
+
+        public bool mux { get; set; }
+
+        public bool debug { get; set; }
 
 
         public SpectreSettings Clone()

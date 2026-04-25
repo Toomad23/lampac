@@ -57,6 +57,26 @@ namespace Shared.PlaywrightCore
 
                 string executablePath = init.executablePath;
 
+                // Why: upstream `lampac-talks/Lampac` (the only host for chrome-linux-*.zip
+                // referenced in baseDownloadUrl + PlaywrightHashPins) was archived
+                // 2026-03-30, so the download path returns 404. PR #51's fail-closed
+                // pin policy (refuse-on-404 / refuse-on-no-pin) then silently disables
+                // every Playwright-gated balancer (Spectre/Mirage/Kinobase/Kinogo).
+                // The image's runtime stage (Build/Docker/amd64.selfbuild) already
+                // installs the `chromium` apt package, so prefer the system binary
+                // when present and skip the download attempt entirely. Operators on
+                // hosts without /usr/bin/chromium still fall through to the existing
+                // download/pin flow.
+                if (string.IsNullOrEmpty(executablePath) && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    string sys = TryFindSystemChromium();
+                    if (sys != null)
+                    {
+                        Console.WriteLine($"Chromium: using system binary {sys}");
+                        executablePath = sys;
+                    }
+                }
+
                 #region Download chromium
                 if (string.IsNullOrEmpty(executablePath))
                 {
@@ -194,6 +214,31 @@ namespace Shared.PlaywrightCore
                 lock (browserLock) { Status = PlaywrightStatus.disabled; }
                 Console.WriteLine($"Chromium: {ex.Message}");
             }
+        }
+        #endregion
+
+        #region TryFindSystemChromium
+        // Standard Linux distro install paths for headless-capable Chromium /
+        // Chrome. Probed in order; first hit wins. Only called on Linux from
+        // CreateAsync — Mac/Windows still go through the download path because
+        // the executable layout is more variable there.
+        static readonly string[] _systemChromiumPaths =
+        {
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/snap/bin/chromium"
+        };
+
+        static string TryFindSystemChromium()
+        {
+            foreach (string path in _systemChromiumPaths)
+            {
+                if (File.Exists(path))
+                    return path;
+            }
+            return null;
         }
         #endregion
 

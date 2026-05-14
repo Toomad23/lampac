@@ -1051,7 +1051,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Download
-        [HttpPost]
+        [HttpGet, HttpPost]
         [Route("dlna/tracker/download")]
         async public Task<JsonResult> Download(string path, int[] indexs, string thumb, long id, bool serial, int lastCount = -1)
         {
@@ -1323,7 +1323,7 @@ namespace DLNA.Controllers
 
 
         #region Delete
-        [HttpPost]
+        [HttpGet, HttpPost]
         [Route("dlna/tracker/stop")]
         [Route("dlna/tracker/delete")]
         async public Task<JsonResult> TorrentDelete(string infohash)
@@ -1360,7 +1360,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Pause
-        [HttpPost]
+        [HttpGet, HttpPost]
         [Route("dlna/tracker/pause")]
         async public Task<JsonResult> TorrentPause(string infohash)
         {
@@ -1379,7 +1379,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region Start
-        [HttpPost]
+        [HttpGet, HttpPost]
         [Route("dlna/tracker/start")]
         async public Task<JsonResult> TorrentStart(string infohash)
         {
@@ -1398,7 +1398,7 @@ namespace DLNA.Controllers
         #endregion
 
         #region ChangeFilePriority
-        [HttpPost]
+        [HttpGet, HttpPost]
         [Route("dlna/tracker/changefilepriority")]
         async public Task<JsonResult> ChangeFilePriority(string infohash, int[] indexs)
         {

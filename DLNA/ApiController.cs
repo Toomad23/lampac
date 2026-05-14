@@ -998,14 +998,6 @@ namespace DLNA.Controllers
                     return Json(files.Select(i => new { i.Path }));
                 }
 
-                // Defensive: clean up any orphaned manager for this hash from a
-                // previous cancelled/failed DownloadMetadataAsync. Without this the
-                // next call hits "A manager for this torrent has already been
-                // registered" because MonoTorrent.AddAsync (called internally by
-                // DownloadMetadataAsync) registers before metadata is fetched and
-                // the manager is left behind on cancellation.
-                try { await removeClientEngine(hash); } catch { }
-
                 try
                 {
                     var data = await torrentEngine.DownloadMetadataAsync(MagnetLink.Parse(magnet), s_cts.Token);
@@ -1019,11 +1011,20 @@ namespace DLNA.Controllers
                 finally
                 {
                     // Always release the manager after the metadata fetch — Show()
-                    // only needs the file list. The streaming session in Download()
-                    // re-loads metadata from the on-disk cache (cache/torrent/{hash})
-                    // and creates its own manager, so keeping this one around just
-                    // wastes the engine slot and triggers the duplicate-register bug
-                    // on the next Show() for the same torrent.
+                    // only needs the file list, and the streaming session in
+                    // Download() re-loads metadata from the on-disk cache
+                    // (cache/torrent/{hash}) and creates its own manager. Keeping
+                    // this one around triggers the duplicate-register bug on the
+                    // next Show() for the same torrent ("A manager for this torrent
+                    // has already been registered" from MonoTorrent.ClientEngine).
+                    //
+                    // PR #68 also added a defensive removeClientEngine(hash) BEFORE
+                    // DownloadMetadataAsync, but that broke cold-start: removeClientEngine
+                    // disposes the whole engine when Torrents.Count == 0 (its end-of-method
+                    // GC path), so on a freshly built engine it nuked torrentEngine and the
+                    // very next line crashed with NullReferenceException. Removed in this
+                    // hotfix — the finally below is sufficient to prevent orphans because
+                    // it runs on every exit path (success, exception, cancellation).
                     try { await removeClientEngine(hash); } catch { }
                 }
             }

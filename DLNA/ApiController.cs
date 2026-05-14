@@ -998,13 +998,50 @@ namespace DLNA.Controllers
                     return Json(files.Select(i => new { i.Path }));
                 }
 
-                var data = await torrentEngine.DownloadMetadataAsync(MagnetLink.Parse(magnet), s_cts.Token);
-                if (data.IsEmpty)
-                    return Json(new { error = "DownloadMetadata" });
+                // Fetch metadata via a manual AddAsync/RemoveAsync flow instead of
+                // torrentEngine.DownloadMetadataAsync. The latter is opaque: on
+                // cancellation it leaves a TorrentManager registered in MonoTorrent's
+                // internal allTorrents set (not visible via engine.Torrents), so the
+                // next Show() for the same infohash explodes with "A manager for this
+                // torrent has already been registered". With our own handle we can
+                // always Stop+Remove in finally, eliminating the orphan path. The
+                // metadata file at manager.MetadataPath is deleted by RemoveAsync
+                // (RemoveMode.CacheDataOnly default), so we read it BEFORE cleanup.
+                TorrentManager probe = null;
+                try
+                {
+                    probe = await torrentEngine.AddAsync(MagnetLink.Parse(magnet), $"{dlna_path}/");
+                    await probe.StartAsync();
+                    await probe.WaitForMetadataAsync(s_cts.Token);
 
-                IO.File.WriteAllBytes($"cache/torrent/{hash}", data.Span);
+                    byte[] metadataBytes = null;
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(probe.MetadataPath) && IO.File.Exists(probe.MetadataPath))
+                            metadataBytes = IO.File.ReadAllBytes(probe.MetadataPath);
+                    }
+                    catch { }
 
-                return Json(Torrent.Load(data.Span).Files.Select(i => new { i.Path }));
+                    if (metadataBytes == null || metadataBytes.Length == 0)
+                        return Json(new { error = "DownloadMetadata" });
+
+                    try
+                    {
+                        Directory.CreateDirectory("cache/torrent");
+                        IO.File.WriteAllBytes($"cache/torrent/{hash}", metadataBytes);
+                    }
+                    catch { }
+
+                    return Json(Torrent.Load(metadataBytes).Files.Select(i => new { i.Path }));
+                }
+                finally
+                {
+                    if (probe != null)
+                    {
+                        try { await probe.StopAsync(TimeSpan.FromSeconds(20)); } catch { }
+                        try { await torrentEngine.RemoveAsync(probe); } catch { }
+                    }
+                }
             }
             catch (Exception ex)
             {

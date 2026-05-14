@@ -998,13 +998,34 @@ namespace DLNA.Controllers
                     return Json(files.Select(i => new { i.Path }));
                 }
 
-                var data = await torrentEngine.DownloadMetadataAsync(MagnetLink.Parse(magnet), s_cts.Token);
-                if (data.IsEmpty)
-                    return Json(new { error = "DownloadMetadata" });
+                // Defensive: clean up any orphaned manager for this hash from a
+                // previous cancelled/failed DownloadMetadataAsync. Without this the
+                // next call hits "A manager for this torrent has already been
+                // registered" because MonoTorrent.AddAsync (called internally by
+                // DownloadMetadataAsync) registers before metadata is fetched and
+                // the manager is left behind on cancellation.
+                try { await removeClientEngine(hash); } catch { }
 
-                IO.File.WriteAllBytes($"cache/torrent/{hash}", data.Span);
+                try
+                {
+                    var data = await torrentEngine.DownloadMetadataAsync(MagnetLink.Parse(magnet), s_cts.Token);
+                    if (data.IsEmpty)
+                        return Json(new { error = "DownloadMetadata" });
 
-                return Json(Torrent.Load(data.Span).Files.Select(i => new { i.Path }));
+                    IO.File.WriteAllBytes($"cache/torrent/{hash}", data.Span);
+
+                    return Json(Torrent.Load(data.Span).Files.Select(i => new { i.Path }));
+                }
+                finally
+                {
+                    // Always release the manager after the metadata fetch — Show()
+                    // only needs the file list. The streaming session in Download()
+                    // re-loads metadata from the on-disk cache (cache/torrent/{hash})
+                    // and creates its own manager, so keeping this one around just
+                    // wastes the engine slot and triggers the duplicate-register bug
+                    // on the next Show() for the same torrent.
+                    try { await removeClientEngine(hash); } catch { }
+                }
             }
             catch (Exception ex)
             {

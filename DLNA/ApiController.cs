@@ -767,7 +767,16 @@ namespace DLNA.Controllers
         // ownership); for routes that operate on the DLNA root without a
         // per-torrent object (e.g. /dlna/delete on a file path), pass null
         // and only admin/local callers are allowed.
-        bool IsDlnaMutationForbidden(string hash = null)
+        // `allowFirstClaim` differentiates the create-write call site (Download —
+        // adds a brand-new torrent and atomically claims ownership by writing
+        // cache/metadata/{hash}.owner) from the mutate-existing call sites
+        // (stop/pause/start/changefilepriority — must already be the owner).
+        // When true, an owner-less hash is treated as available for claiming
+        // by the current tenant; without it, owner == null is "operator-only"
+        // (legacy behaviour from PR #49). Without this distinction every
+        // first-time Download of a new torrent for an accsdb tenant returns
+        // forbidden, because the gate runs before TryWriteTorrentOwner.
+        bool IsDlnaMutationForbidden(string hash = null, bool allowFirstClaim = false)
         {
             // Admin cookie bypass — matches the pattern in AdminController.TryAuthorizeAdmin
             // and the Accsdb middleware. Works even when accsdb is disabled.
@@ -808,10 +817,13 @@ namespace DLNA.Controllers
 
             string owner = TryReadTorrentOwner(hash);
 
-            // Legacy torrents added before this fix have no .owner file.
-            // They belong to the operator; only admin/local may manage them.
+            // Owner-less torrent. With allowFirstClaim=true (Download path),
+            // any authenticated tenant may claim it — the caller is expected
+            // to TryWriteTorrentOwner immediately after this check. Without
+            // allowFirstClaim (mutate paths), refuse: only admin/local should
+            // touch torrents added by legacy/operator paths.
             if (owner == null)
-                return true;
+                return !allowFirstClaim;
 
             return !string.Equals(owner, callerUid, StringComparison.Ordinal);
         }
@@ -1070,8 +1082,10 @@ namespace DLNA.Controllers
                 // Ownership gate: compute the infohash first so the ACL check can
                 // look up an existing .owner record (if the torrent is already
                 // queued by another tenant, the current caller must not be able
-                // to replay a Download on it without permission).
-                if (IsDlnaMutationForbidden(hash))
+                // to replay a Download on it without permission). allowFirstClaim
+                // permits a fresh accsdb tenant to add a brand-new torrent — the
+                // TryWriteTorrentOwner call below pins ownership immediately.
+                if (IsDlnaMutationForbidden(hash, allowFirstClaim: true))
                     return Json(new { error = "forbidden" });
 
                 if (IO.File.Exists($"cache/torrent/{hash}") && !IO.File.Exists($"cache/metadata/{hash.ToUpper()}.torrent"))

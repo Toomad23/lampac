@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Playwright;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Linq;
 using Shared.Engine.RxEnumerate;
 using Shared.Engine.Utilities;
 using Shared.Models.Online.Settings;
@@ -353,14 +354,21 @@ namespace Online.Controllers
             string streamId = init.mux ? (requestInfo?.IP ?? "unknown") : "muxoff";
 
             var result = await goMovie(linkhostUri, id_file);
-            if (result.streams.data == null || result.streams.data.Count == 0 || string.IsNullOrEmpty(result.wsUri))
+            if (result.streams.data == null || result.streams.data.Count == 0)
                 return OnError();
 
-            // Start WS only if the handshake URI is public. wsUri comes from a
-            // JSON field (pnr) returned by a third-party endpoint — treat as
-            // user-tainted and reject private IP / non-ws schemes.
-            if (!IsAllowedWebSocketUri(result.wsUri))
-                return OnError("ws uri");
+            // Two upstream modes:
+            //  - WS-gated: `wsUri` is set, edge_hash arrives over WebSocket and
+            //    the proxy hook injects Accepts-Controls + Authorizations.
+            //  - No-handshake: `wsUri` is empty, CDN's anti-bot only checks
+            //    Referer/Origin/UA. Still register the WatchMux so the proxy
+            //    hook can apply those headers — without registration the hook
+            //    bails fail-closed and the CDN returns 403.
+            if (!string.IsNullOrEmpty(result.wsUri))
+            {
+                if (!IsAllowedWebSocketUri(result.wsUri))
+                    return OnError("ws uri");
+            }
 
             bool ok = await Service.AddOrUpdate(streamId, result.wsUri, result.watch);
             if (!ok)
@@ -598,7 +606,27 @@ namespace Online.Controllers
                                 if (reqHeaders.TryGetValue("origin", out string origin))
                                     watch.requestOrigin = origin;
 
-                                wsUri = jo.Value<string>("pnr") + $"?sid={jo.Value<string>("pnk")}&v=2.1&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+                                // Build wsUri only when both pnr and pnk are present.
+                                // When upstream omits them (anti-bot trip, schema drift,
+                                // expired token) wsUri stays null so Video() bails with
+                                // OnError() and Lampa moves on to the next balancer.
+                                string pnr = jo.Value<string>("pnr");
+                                string pnk = jo.Value<string>("pnk");
+                                if (!string.IsNullOrEmpty(pnr) && !string.IsNullOrEmpty(pnk))
+                                {
+                                    wsUri = pnr + $"?sid={pnk}&v=2.1&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+                                }
+                                else
+                                {
+                                    // Diagnostic dump — first 500 chars of the upstream JSON
+                                    // plus the top-level key list. Helps spot whether `pnr`
+                                    // was renamed, whether anti-bot returned a partial
+                                    // response, or whether something else changed. Always
+                                    // on (cheap, fires only when handshake is missing).
+                                    string keys = string.Join(",", jo.Properties().Select(p => p.Name));
+                                    string head = json.Length > 500 ? json.Substring(0, 500) : json;
+                                    Console.WriteLine($"[Spectre] no pnr/pnk (id_file={id_file}) status={fetchResponse.Status} keys=[{keys}] head={head}");
+                                }
 
                                 var selectedItem =
                                     jo["hlsSource"]
@@ -690,18 +718,28 @@ namespace Online.Controllers
                 return false;
 
             if (!Uri.TryCreate(uri, UriKind.Absolute, out Uri parsed))
+            {
+                Console.WriteLine($"[Spectre] wsUri reject (parse): {uri}");
                 return false;
+            }
 
-            // Map ws://host -> http://host / wss://host -> https://host and reuse
-            // SsrfGuard's IP-literal + scheme rejection. DNS resolution happens
-            // just-in-time during connect; this is the primary fail-closed guard
-            // against RFC1918 / loopback targets fed through the `pnr` JSON field.
+            // `pnr` from upstream Spectre may arrive as http(s) or ws(s).
+            // Map either family to https/http for SsrfGuard's IP-literal +
+            // scheme rejection. ClientWebSocket.ConnectAsync at the call site
+            // requires ws/wss specifically — Service normalises before connect.
             string scheme = parsed.Scheme;
-            if (scheme != "ws" && scheme != "wss")
+            if (scheme != "ws" && scheme != "wss" && scheme != "http" && scheme != "https")
+            {
+                Console.WriteLine($"[Spectre] wsUri reject (scheme={scheme}): {uri}");
                 return false;
+            }
 
-            var builder = new UriBuilder(parsed) { Scheme = scheme == "wss" ? "https" : "http" };
-            return SsrfGuard.IsAllowedPublicUriBasic(builder.Uri.ToString());
+            string httpScheme = (scheme == "wss" || scheme == "https") ? "https" : "http";
+            var builder = new UriBuilder(parsed) { Scheme = httpScheme };
+            bool ok = SsrfGuard.IsAllowedPublicUriBasic(builder.Uri.ToString());
+            if (!ok)
+                Console.WriteLine($"[Spectre] wsUri reject (ssrf): {uri}");
+            return ok;
         }
         #endregion
     }

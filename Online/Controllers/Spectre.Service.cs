@@ -77,7 +77,7 @@ namespace Online.Controllers
             if (string.IsNullOrEmpty(streamId))
                 return;
 
-            if (!watchs.TryGetValue(streamId, out WatchMux watch) || watch?.ws == null)
+            if (!watchs.TryGetValue(streamId, out WatchMux watch))
             {
                 if (conf.debug)
                     Console.WriteLine($"[Spectre] watch null (streamId={streamId})");
@@ -88,58 +88,67 @@ namespace Online.Controllers
                 return;
             }
 
-            // Wait briefly for the WS handshake to deliver edge_hash.
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (watch.edge_hash == null && sw.Elapsed < TimeSpan.FromSeconds(20))
-                await Task.Delay(25);
-
-            if (watch.edge_hash == null)
+            // Two modes upstream uses:
+            //  - WS-gated (legacy): pnr+pnk present, edge_hash arrives over WS.
+            //    Wait briefly, then inject Accepts-Controls + Authorizations.
+            //  - No-handshake (current schema for most streams): pnr/pnk are
+            //    omitted, WatchMux has no `ws`. We still apply Referer/Origin/UA
+            //    from the Playwright fetch — CDN's anti-bot keys off those.
+            bool hasWs = watch.ws != null;
+            if (hasWs)
             {
-                if (conf.debug)
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (watch.edge_hash == null && sw.Elapsed < TimeSpan.FromSeconds(20))
+                    await Task.Delay(25);
+
+                if (watch.edge_hash == null && conf.debug)
                     Console.WriteLine($"[Spectre] edge_hash null (streamId={streamId})");
-                return;
             }
 
             watch.lastreq = DateTime.Now;
 
-            #region current_time (inferred from segment index in URL)
-            // Upstream keyed this off decryptLink.userdata; we parse the segment
-            // index from the proxied URL and derive elapsed seconds.
-            string reqUri = e.requestMessage?.RequestUri?.ToString() ?? string.Empty;
-            string segId = Regex.Match(reqUri, "/seg-([0-9]+)-").Groups[1].Value;
-            int seg = int.TryParse(segId, out int s) ? s : 0;
-
-            bool sendSeeked = false;
-
-            if (25 >= seg)
+            #region current_time (WS-only — segment-index → elapsed seconds)
+            // Only meaningful when WS handshake is active. The "seeked" message
+            // gates upstream's anti-bot timing on legacy streams; on the
+            // handshake-less schema we have nothing to send.
+            if (hasWs && watch.edge_hash != null)
             {
-                lock (watch.stateLock)
+                string reqUri = e.requestMessage?.RequestUri?.ToString() ?? string.Empty;
+                string segId = Regex.Match(reqUri, "/seg-([0-9]+)-").Groups[1].Value;
+                int seg = int.TryParse(segId, out int s) ? s : 0;
+
+                bool sendSeeked = false;
+
+                if (25 >= seg)
                 {
-                    watch.current_time = 0;
-                    watch.last_time = 0;
+                    lock (watch.stateLock)
+                    {
+                        watch.current_time = 0;
+                        watch.last_time = 0;
+                    }
                 }
-            }
-            else
-            {
-                lock (watch.stateLock)
+                else
                 {
-                    watch.current_time = (seg - 25) * 6;
-                    if (watch.last_time == 0)
+                    lock (watch.stateLock)
+                    {
+                        watch.current_time = (seg - 25) * 6;
+                        if (watch.last_time == 0)
+                            watch.last_time = watch.current_time;
+
+                        if ((watch.current_time - watch.last_time) > 90)
+                            sendSeeked = true;
+
                         watch.last_time = watch.current_time;
+                    }
 
-                    if ((watch.current_time - watch.last_time) > 90)
-                        sendSeeked = true;
+                    if (sendSeeked)
+                    {
+                        if (conf.debug)
+                            Console.WriteLine($"[Spectre] seeked: {watch.current_time} (streamId={streamId})");
 
-                    watch.last_time = watch.current_time;
-                }
-
-                if (sendSeeked)
-                {
-                    if (conf.debug)
-                        Console.WriteLine($"[Spectre] seeked: {watch.current_time} (streamId={streamId})");
-
-                    await WsSendAsync(watch, "seeked");
-                    await Task.Delay(1000);
+                        await WsSendAsync(watch, "seeked");
+                        await Task.Delay(1000);
+                    }
                 }
             }
             #endregion
@@ -154,9 +163,15 @@ namespace Online.Controllers
             e.requestMessage.Headers.TryAddWithoutValidation("User-Agent", Http.UserAgent);
             e.requestMessage.Headers.TryAddWithoutValidation("Accept", "*/*");
             e.requestMessage.Headers.TryAddWithoutValidation("Accept-Language", "ru-RU,ru;q=0.9,uk-UA;q=0.8,uk;q=0.7,en-US;q=0.6,en;q=0.5");
-            e.requestMessage.Headers.TryAddWithoutValidation("Accepts-Controls", watch.edge_hash);
-            // Upstream-constant bearer; do not log.
-            e.requestMessage.Headers.TryAddWithoutValidation("Authorizations", AuthorizationsBearer);
+            // edge_hash gate: only attach when the WS stream actually delivered
+            // one. On the no-handshake schema upstream doesn't accept the
+            // Accepts-Controls header at all — sending an empty value 403s.
+            if (!string.IsNullOrEmpty(watch.edge_hash))
+            {
+                e.requestMessage.Headers.TryAddWithoutValidation("Accepts-Controls", watch.edge_hash);
+                // Upstream-constant bearer; do not log.
+                e.requestMessage.Headers.TryAddWithoutValidation("Authorizations", AuthorizationsBearer);
+            }
             if (!string.IsNullOrEmpty(watch.requestOrigin))
                 e.requestMessage.Headers.TryAddWithoutValidation("Origin", watch.requestOrigin);
             e.requestMessage.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
@@ -201,6 +216,11 @@ namespace Online.Controllers
             if (watchs.TryRemove(streamId, out WatchMux prev))
                 prev?.Dispose();
 
+            // No-handshake schema: register watch so the proxy hook can still
+            // apply Referer/Origin/UA on segment fetches. Skip the WS step.
+            if (string.IsNullOrEmpty(wsUri))
+                return watchs.TryAdd(streamId, watch);
+
             bool connected = await WebSocket(wsUri, watch);
             if (!connected)
                 return false;
@@ -220,7 +240,18 @@ namespace Online.Controllers
 
                 watch.wscts = new CancellationTokenSource();
 
-                await watch.ws.ConnectAsync(new Uri(wsUri), watch.wscts.Token);
+                // Upstream `pnr` may arrive as http(s); ClientWebSocket only
+                // accepts ws(s). Normalise here so a benign scheme mismatch
+                // doesn't throw ArgumentException at connect time.
+                var wsTarget = new Uri(wsUri);
+                if (wsTarget.Scheme == "http" || wsTarget.Scheme == "https")
+                {
+                    var b = new UriBuilder(wsTarget) { Scheme = wsTarget.Scheme == "https" ? "wss" : "ws" };
+                    b.Port = wsTarget.IsDefaultPort ? -1 : wsTarget.Port;
+                    wsTarget = b.Uri;
+                }
+
+                await watch.ws.ConnectAsync(wsTarget, watch.wscts.Token);
 
                 var receiveBuffer = new byte[16 * 1024];
 

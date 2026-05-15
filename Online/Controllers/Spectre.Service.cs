@@ -220,7 +220,18 @@ namespace Online.Controllers
 
                 watch.wscts = new CancellationTokenSource();
 
-                await watch.ws.ConnectAsync(new Uri(wsUri), watch.wscts.Token);
+                // Upstream `pnr` may arrive as http(s); ClientWebSocket only
+                // accepts ws(s). Normalise here so a benign scheme mismatch
+                // doesn't throw ArgumentException at connect time.
+                var wsTarget = new Uri(wsUri);
+                if (wsTarget.Scheme == "http" || wsTarget.Scheme == "https")
+                {
+                    var b = new UriBuilder(wsTarget) { Scheme = wsTarget.Scheme == "https" ? "wss" : "ws" };
+                    b.Port = wsTarget.IsDefaultPort ? -1 : wsTarget.Port;
+                    wsTarget = b.Uri;
+                }
+
+                await watch.ws.ConnectAsync(wsTarget, watch.wscts.Token);
 
                 var receiveBuffer = new byte[16 * 1024];
 

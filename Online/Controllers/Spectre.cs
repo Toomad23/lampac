@@ -353,18 +353,22 @@ namespace Online.Controllers
             string streamId = init.mux ? (requestInfo?.IP ?? "unknown") : "muxoff";
 
             var result = await goMovie(linkhostUri, id_file);
-            if (result.streams.data == null || result.streams.data.Count == 0 || string.IsNullOrEmpty(result.wsUri))
+            if (result.streams.data == null || result.streams.data.Count == 0)
                 return OnError();
 
-            // Start WS only if the handshake URI is public. wsUri comes from a
-            // JSON field (pnr) returned by a third-party endpoint — treat as
-            // user-tainted and reject private IP / non-ws schemes.
-            if (!IsAllowedWebSocketUri(result.wsUri))
-                return OnError("ws uri");
+            // WS handshake is optional. Upstream sometimes serves hlsSource
+            // without pnr/pnk (no edge_hash gate) — those streams play
+            // straight from the CDN. Only spin up the WatchMux when we have
+            // a usable wsUri *and* it passes our SSRF guard.
+            if (!string.IsNullOrEmpty(result.wsUri))
+            {
+                if (!IsAllowedWebSocketUri(result.wsUri))
+                    return OnError("ws uri");
 
-            bool ok = await Service.AddOrUpdate(streamId, result.wsUri, result.watch);
-            if (!ok)
-                return OnError("ws");
+                bool ok = await Service.AddOrUpdate(streamId, result.wsUri, result.watch);
+                if (!ok)
+                    return OnError("ws");
+            }
 
             var first = result.streams.Firts();
 
@@ -598,7 +602,16 @@ namespace Online.Controllers
                                 if (reqHeaders.TryGetValue("origin", out string origin))
                                     watch.requestOrigin = origin;
 
-                                wsUri = jo.Value<string>("pnr") + $"?sid={jo.Value<string>("pnk")}&v=2.1&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+                                // Upstream Spectre sometimes returns hlsSource without
+                                // the pnr/pnk handshake fields (no edge_hash gate on
+                                // these streams). Only build wsUri when both are present,
+                                // otherwise leave it null so Video() skips the WS step.
+                                string pnr = jo.Value<string>("pnr");
+                                string pnk = jo.Value<string>("pnk");
+                                if (!string.IsNullOrEmpty(pnr) && !string.IsNullOrEmpty(pnk))
+                                    wsUri = pnr + $"?sid={pnk}&v=2.1&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+                                else if (init.debug)
+                                    Console.WriteLine($"[Spectre] no pnr/pnk in response (id_file={id_file}) — skipping WS handshake");
 
                                 var selectedItem =
                                     jo["hlsSource"]
@@ -690,18 +703,28 @@ namespace Online.Controllers
                 return false;
 
             if (!Uri.TryCreate(uri, UriKind.Absolute, out Uri parsed))
+            {
+                Console.WriteLine($"[Spectre] wsUri reject (parse): {uri}");
                 return false;
+            }
 
-            // Map ws://host -> http://host / wss://host -> https://host and reuse
-            // SsrfGuard's IP-literal + scheme rejection. DNS resolution happens
-            // just-in-time during connect; this is the primary fail-closed guard
-            // against RFC1918 / loopback targets fed through the `pnr` JSON field.
+            // `pnr` from upstream Spectre may arrive as http(s) or ws(s).
+            // Map either family to https/http for SsrfGuard's IP-literal +
+            // scheme rejection. ClientWebSocket.ConnectAsync at the call site
+            // requires ws/wss specifically — Service normalises before connect.
             string scheme = parsed.Scheme;
-            if (scheme != "ws" && scheme != "wss")
+            if (scheme != "ws" && scheme != "wss" && scheme != "http" && scheme != "https")
+            {
+                Console.WriteLine($"[Spectre] wsUri reject (scheme={scheme}): {uri}");
                 return false;
+            }
 
-            var builder = new UriBuilder(parsed) { Scheme = scheme == "wss" ? "https" : "http" };
-            return SsrfGuard.IsAllowedPublicUriBasic(builder.Uri.ToString());
+            string httpScheme = (scheme == "wss" || scheme == "https") ? "https" : "http";
+            var builder = new UriBuilder(parsed) { Scheme = httpScheme };
+            bool ok = SsrfGuard.IsAllowedPublicUriBasic(builder.Uri.ToString());
+            if (!ok)
+                Console.WriteLine($"[Spectre] wsUri reject (ssrf): {uri}");
+            return ok;
         }
         #endregion
     }

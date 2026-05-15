@@ -17,15 +17,18 @@ COPY Shared/Shared.csproj Shared/
 COPY SISI/SISI.csproj SISI/
 COPY Tracks/Tracks.csproj Tracks/
 COPY TorrServer/TorrServer.csproj TorrServer/
-RUN dotnet restore Online/Online.csproj
+RUN dotnet restore Online/Online.csproj \
+ && dotnet restore Tracks/Tracks.csproj
 
 COPY . .
 RUN dotnet publish Online/Online.csproj -c Release -o /publish/module --no-restore \
+ && dotnet publish Tracks/Tracks.csproj -c Release -o /publish/module --no-restore \
  && find /publish -name '*.pdb' -delete
 
 # Runtime — поверх работающего образа на NAS.
 FROM ghcr.io/toomad23/lampac:main
 USER root
 COPY --from=build /publish/module/Online.dll /home/module/Online.dll
-RUN chown 1000:1000 /home/module/Online.dll
+COPY --from=build /publish/module/Tracks.dll /home/module/Tracks.dll
+RUN chown 1000:1000 /home/module/Online.dll /home/module/Tracks.dll
 USER 1000:1000

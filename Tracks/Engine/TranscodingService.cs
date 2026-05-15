@@ -696,6 +696,15 @@ omit_endlist — не добавлять #EXT-X-ENDLIST, чтобы плейли
                             foreach (var t in c.Split(' ', StringSplitOptions.RemoveEmptyEntries))
                                 args.Add(t);
                         }
+
+                        // Force keyframes on HLS segment boundaries. Without
+                        // this, libx264's natural GOP boundaries drift from
+                        // -hls_time, segments without leading I-frames can't
+                        // be decoded standalone and ExoPlayer stalls on a
+                        // black screen (esp. mpeg4/XVID -> h264 paths).
+                        int segDur = Math.Max(1, context.HlsOptions.segDur);
+                        args.Add("-force_key_frames");
+                        args.Add($"expr:gte(t,n_forced*{segDur.ToString(CultureInfo.InvariantCulture)})");
                     }
                     else
                     {
@@ -794,7 +803,18 @@ omit_endlist — не добавлять #EXT-X-ENDLIST, чтобы плейли
             if (context.live)
             {
                 args.Add("-hls_flags");
-                args.Add("append_list+omit_endlist+delete_segments");
+                args.Add("append_list+omit_endlist+delete_segments+temp_file");
+            }
+            else
+            {
+                // Atomic-write: ffmpeg writes seg_NNNNN.m4s.tmp first, then
+                // renames into place when the segment is complete. Without
+                // this, the segment endpoint can serve a half-written file —
+                // the player gets a truncated payload that won't decode.
+                // Symptom: tiny seg_00001 (e.g. 150 KB instead of 3 MB) and
+                // a black screen / hung loading on Android ExoPlayer.
+                args.Add("-hls_flags");
+                args.Add("temp_file");
             }
 
             args.Add("-hls_list_size");
